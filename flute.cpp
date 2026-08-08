@@ -11,148 +11,151 @@
 
 namespace nib {
 
-void Flute::Init(uint32_t seed)
+void Flute::Init()
 {
 	phase_ = 0;
 	inc_   = 0;
-	rng_   = seed ? seed : 0x1234567u;   // xorshift never recovers from zero
-	n1_ = n2_ = b1_ = b2_ = 0;
-	dcX1_ = dcY1_ = lastNoise_ = 0;
+	fold_  = 0;
 	muted_ = false;
-	airQ12_ = kAirMin; cutQ15_ = kCutMin;
-	resQ15_ = kResMin; driveQ12_ = kDriveMin;
+	sine_ = folded_ = 0;
+	square_ = false;
+	dcX1_ = dcY1_ = dcX2_ = dcY2_ = 0;
 }
 
-void Flute::SetTimbre(int32_t airQ12, int32_t cutQ15, int32_t resQ15,
-                      int32_t driveQ12)
+void __not_in_flash_func(Flute::Step)(int32_t levelQ12)
 {
-	if (airQ12 < 0) airQ12 = 0;
-	if (airQ12 > 4096) airQ12 = 4096;
-	if (cutQ15 < 512)     cutQ15 = 512;
-	if (cutQ15 > kCutMax) cutQ15 = kCutMax;
-
-	airQ12_   = airQ12;
-	resQ15_   = resQ15;
-	driveQ12_ = driveQ12;
-
-	// Deliberately does NOT clear muted_. Mute state belongs to Mute()/Unmute()
-	// alone — in v1 this setter reset the loop gain, which quietly cancelled
-	// the chiff stop every time the X knob moved.
-	cutQ15_ = muted_ ? kMuteCutQ15 : cutQ15;
-}
-
-void Flute::Mute()
-{
-	// Slam the filter shut. There is no feedback loop here, so unlike the old
-	// waveguide there is nothing that can keep ringing — the tail is only the
-	// filter's own, and closing it kills that in a few milliseconds.
+	// Zero level is EXACTLY zero on every output, and it costs one branch.
 	//
-	// The cutoff has to go genuinely LOW, not merely low-ish: at 1200 the
-	// filter still passed 69% of the level, because a 2-pole at that corner is
-	// nowhere near shut for a signal an octave below it. Measured, not guessed.
-	muted_  = true;
-	cutQ15_ = kMuteCutQ15;
-}
-
-void Flute::Unmute()
-{
-	muted_ = false;
-}
-
-int32_t __not_in_flash_func(Flute::Step)(int32_t breathQ12)
-{
-	// Zero breath is EXACTLY zero out, and it costs one branch to guarantee.
-	//
-	// v1 could not make this promise: its excitation did not depend on breath,
-	// so the bore drove itself and the card never went quiet. Everything here
-	// is feed-forward, so silence is structural rather than something that has
-	// to be arranged.
-	if (breathQ12 <= 0)
+	// Silence is structural here: everything is feed-forward from an oscillator
+	// that is simply not scaled. v1's waveguide could not make this promise
+	// because its excitation did not depend on the knob — see flute.h.
+	if (levelQ12 <= 0 || muted_)
 	{
-		lastNoise_ = 0;
-		return 0;
+		sine_   = 0;
+		folded_ = 0;
+		square_ = false;
+		return;
 	}
 
-	// 1. The tone. Exact pitch, by construction.
 	phase_ += inc_;
-	int32_t tone = fast_sin(phase_) >> 4;          // ~+/-2048
 
-	// 2. Soft saturation: y = x - x^3/3.
-	//
-	// The same curve the old jet used, but here nothing feeds back into it, so
-	// it can only colour a pitch that is already fixed. It cannot run away and
-	// it cannot change which frequency comes out.
+	// The raw oscillator, Q12 (+/-4096).
+	const int32_t raw = fast_sin(phase_) >> 3;
+
+	// --- Audio Out 1: the sine -------------------------------------------
+	int32_t s = (raw * levelQ12) >> 12;
 	{
-		int32_t d = (tone * driveQ12_) >> 12;
-		if (d >  4096) d =  4096;
-		if (d < -4096) d = -4096;
-		const int32_t d2 = (d * d) >> 12;
-		const int32_t d3 = (d2 * d) >> 12;
-		tone = d - ((d3 * 21845) >> 16);           // d^3 / 3
+		// The +16384 ROUNDS the shift. It sits inside the blocker's own
+		// feedback path, so a half-LSB truncation bias accumulates to a stable
+		// non-zero offset — measured at -497 on a +/-4300 signal in v1, on the
+		// output of the thing whose entire job is removing DC.
+		const int32_t y = s - dcX1_ + ((dcY1_ * kDcPoleQ15 + 16384) >> 15);
+		dcX1_ = s;
+		dcY1_ = y;
+		sine_ = y;
 	}
 
-	// 3. The air. Two poles, so it is breath rather than hiss.
-	const int32_t white = rand_bipolar(rng_) >> 2;
-	n1_ += ((white - n1_) * kNoiseLpQ15) >> 15;
-	n2_ += ((n1_   - n2_) * kNoiseLpQ15) >> 15;
+	// --- Audio Out 2: the wavefold ---------------------------------------
+	//
+	// Triangle reflection: drive the signal past the rails and mirror it back
+	// inside. Each reflection folds a peak into a valley, which is what
+	// generates the harmonics — and because the shape stays symmetric they are
+	// ODD only, so it thickens into something reedy rather than into fuzz.
+	//
+	// The loop is bounded at kFoldPasses rather than run to convergence: this
+	// is the audio path, and an unbounded loop would make the sample cost
+	// depend on the signal. Four is well past audible difference.
+	int32_t f = (raw * (4096 + fold_ * 3)) >> 12;
+	for (int i = 0; i < kFoldPasses; i++)
+	{
+		if      (f >  4096) f =  8192 - f;
+		else if (f < -4096) f = -8192 - f;
+		else break;
+	}
+	f = (f * levelQ12) >> 12;
+	{
+		const int32_t y = f - dcX2_ + ((dcY2_ * kDcPoleQ15 + 16384) >> 15);
+		dcX2_ = f;
+		dcY2_ = y;
+		folded_ = y;
+	}
 
-	// Scaled so the air sits UNDER the note rather than beside it. See
-	// kAirGainQ12 — the mix ratio alone could not do this without flattening
-	// the X knob.
-	const int32_t air = (n2_ * kAirGainQ12) >> 12;
-	lastNoise_ = (air * breathQ12) >> 12;
-
-	// 4. Mix tone and air.
-	const int32_t src = (tone * (4096 - airQ12_) + air * airQ12_) >> 12;
-
-	// 5. The bore: a 2-pole resonant lowpass, standing in for the body the
-	//    delay line used to provide.
-	b1_ += (((src - b1_) + (((b1_ - b2_) * resQ15_) >> 15)) * cutQ15_) >> 15;
-	b2_ += ((b1_ - b2_) * cutQ15_) >> 15;
-	int32_t out = b2_;
-
-	// 6. Breath as a VCA. Together with the filter and drive above, this is
-	//    what makes blowing harder louder AND brighter AND richer.
-	out = (out * breathQ12) >> 12;
-
-	// 7. DC blocker. The +16384 ROUNDS the shift: it sits inside the blocker's
-	//    own feedback path, so a half-LSB truncation bias accumulates to a
-	//    stable non-zero offset — measured at -497 on a +/-4300 signal in v1,
-	//    on the output of the thing whose entire job is removing DC.
-	const int32_t y = out - dcX1_ + ((dcY1_ * kDcPoleQ15 + 16384) >> 15);
-	dcX1_ = out;
-	dcY1_ = y;
-	return y;
+	// --- Pulse Out 2: the square -----------------------------------------
+	//
+	// Taken from the oscillator's sign, NOT from the level-scaled sine. A
+	// comparator on a scaled signal flips at the same instants but chatters
+	// around zero as the level approaches silence.
+	square_ = (raw >= 0);
 }
 
 // ---------------------------------------------------------------------------
+// Knob mappings
+// ---------------------------------------------------------------------------
 
-Timbre TimbreFor(int32_t breathQ12, int32_t xKnob)
+namespace {
+
+/// Linear interpolate a..b by t, where t is Q12 0..4096.
+inline int32_t Lerp(int32_t a, int32_t b, int32_t tQ12)
 {
-	int32_t b = breathQ12;
-	if (b < 0) b = 0;
-	if (b > 4095) b = 4095;
+	return a + (((b - a) * tQ12) >> 12);
+}
+
+} // namespace
+
+Vibrato VibratoFor(int32_t mainQ12, int32_t xKnob)
+{
 	int32_t x = xKnob;
 	if (x < 0) x = 0;
 	if (x > 4095) x = 4095;
 
-	Timbre t;
+	// X morphs through three anchors, in two segments — so the middle anchor
+	// lands on a real position of the knob rather than somewhere the maths
+	// glosses over.
+	int32_t rate, depth;
+	if (x < 2048)
+	{
+		const int32_t t = x << 1;                        // 0..4094 across the half
+		rate  = kVibRateFastQ8;                          // fast throughout
+		depth = Lerp(kVibDepthWide, kVibDepthTight, t);
+	}
+	else
+	{
+		const int32_t t = (x - 2048) << 1;
+		rate  = Lerp(kVibRateFastQ8, kVibRateSlowQ8, t);
+		depth = Lerp(kVibDepthTight, kVibDepthWide, t);
+	}
 
-	// X: breathy -> pure, over the range where it is actually audible.
-	int32_t air = kAirMax - (((kAirMax - kAirMin) * x) >> 12);
-	// Blowing harder thins the air out, so soft playing is mostly breath.
-	air -= (kAirBreathTilt * b) >> 12;
-	if (air < 0) air = 0;
-	t.air = air;
+	// MAIN scales the depth, from nothing to the full amount X asked for.
+	//
+	// Below kVibOnset there is NO vibrato — not a small amount, none. The lower
+	// half of the knob is the volume stage and the upper half is the vibrato
+	// stage; letting them overlap would mean a turn in the lower half both
+	// raised the level and started a wobble, so neither would read as its own
+	// gesture.
+	int32_t m = mainQ12;
+	if (m < kVibOnset) return Vibrato{rate, 0};
+	if (m > 4095) m = 4095;
 
-	// Brightness rises with breath, and X shifts the whole range.
-	int32_t cut = kCutMin + ((7000 * b) >> 12) + ((3000 * x) >> 12);
-	if (cut > kCutMax) cut = kCutMax;
-	t.cut = cut;
+	// The divisor is a compile-time constant, so this is a multiply.
+	constexpr int32_t kSpan = 4095 - kVibOnset;
+	const int32_t grow = ((m - kVibOnset) << 12) / kSpan;
+	return Vibrato{rate, (depth * grow) >> 12};
+}
 
-	t.res   = kResMin + (((kResMax - kResMin) * x) >> 12);
-	t.drive = kDriveMin + ((kDriveSpan * b) >> 12);
-	return t;
+int32_t XVolumeBoost(int32_t xKnob)
+{
+	int32_t x = xKnob;
+	if (x < 0) x = 0;
+	if (x > 4095) x = 4095;
+	return (kXVolumeTilt * x) >> 12;
+}
+
+int32_t FoldFor(int32_t xKnob)
+{
+	int32_t x = xKnob;
+	if (x < 0) x = 0;
+	if (x > 4095) x = 4095;
+	return (kFoldMax * x) >> 12;
 }
 
 } // namespace nib

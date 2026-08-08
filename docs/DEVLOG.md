@@ -5,6 +5,75 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v3.0.0 — the air went, vibrato arrived
+
+> "No - not enjoying it. The air is adding nothing."
+
+Which was right, and is a judgement no model could have made. The v2 voice mixed
+filtered noise under a tone as "breath"; on hardware it was either inaudible or
+it muddied the pitch, and the middle ground that would have sounded like a
+player breathing does not exist at these levels.
+
+So the whole air path is gone — noise generator, air/tone mix, resonant body
+filter, chiff noise burst. What replaces it as the source of expression is
+**vibrato that grows with the knob**, which is a thing a player actually does
+and is audible in a way the noise never was.
+
+### The shape of the instrument now
+
+| | |
+|---|---|
+| **Main** | level (fast, log) → then **vibrato depth** |
+| **X** | vibrato character → fast/wide, fast/tight, slow/wide, + level tilt + fold |
+
+The two stages of Main do not overlap: vibrato starts at `kVibOnset = 2000`,
+above where the level curve has flattened. Letting them overlap would mean a
+turn in the lower half both raised the level and started a wobble, so neither
+would read as its own gesture.
+
+### One oscillator, three outputs
+
+Audio 1 is a sine, Audio 2 the same wave wavefolded, Pulse 2 the same wave
+squared — all from one phase accumulator, so they cannot drift apart. Mixing
+Audio 1 and 2 cannot comb-filter, and the square always lines up with both.
+
+The square is taken from the oscillator's SIGN rather than from the level-scaled
+sine: a comparator on a scaled signal flips at the same instants but chatters
+around zero as the level approaches silence.
+
+### The wavefolder is capped at half its range, and that is measured
+
+Sweeping the fold further is **not monotonic**. The spectral centroid climbs
+1.04 → 3.60 up to fold 2048, then DIPS back to 3.00 before rising again, because
+completing a fold returns the fundamental before the next harmonic pair arrives.
+
+That dip is a real property of wavefolding rather than a bug — but a knob that
+gets brighter, then duller, then brighter reads as broken under the hand. So
+`kFoldMax` stops at the top of the monotonic region, giving up available
+richness to keep the control honest.
+
+### The CV cache stopped hitting, on purpose
+
+`CVOutMillivolts` reaches a flash-resident helper, so the card caches its last
+value to keep XIP reads out of the control path. With vibrato running, the pitch
+changes every tick and the cache almost never hits.
+
+That is correct rather than a regression: a pitch CV that only updated once per
+note would not carry the vibrato, which is the entire expression. Measured, the
+two calls are ~80 cycles of a 4000-cycle budget and the XIP line stays hot at a
+3kHz call rate. The cache still earns its place across the whole lower half of
+the knob, where vibrato is at zero.
+
+### New I/O
+
+CV In 2 became a pitch offset (±2 octaves, quantised to semitones so an
+imprecise voltage moves a musical interval rather than leaving everything
+slightly sharp). The two audio inputs became CV offsets for Main and X — doubled
+on the way in, because `AudioIn` is ±2048 where the knobs are 0..4095, so a
+full-scale CV can sweep a knob end to end from either extreme.
+
+---
+
 ## v2.1.0 — second hardware session
 
 Three reports, one of them a hard bug.

@@ -57,17 +57,18 @@ enum class Articulation : uint8_t {
 	Legato,    ///< switch UP: glide between notes, no chiff, plus vibrato
 };
 
-/// Chiff: a burst of extra noise plus a momentary dip in the air, which is
-/// physically what a tongue stroke does — it interrupts the flow and releases.
+/// Chiff: a momentary dip in the level at the start of a note, which is what
+/// separates one note from the next when they are the same pitch.
 ///
-/// These are grouped and flagged because they are EXPECTED TO NEED TUNING BY
-/// EAR on hardware. A chiff that is too short vanishes into a breathy
-/// instrument; one that cuts the air too hard is a click rather than a
-/// consonant. Neither can be modelled usefully — this is the one part of the
-/// card that has to be judged by listening.
+/// The noise burst that used to accompany this is gone with the rest of the air
+/// path — there is no noise generator any more. What remains is purely the dip,
+/// which is the part that actually articulates: a short gap reads as a new
+/// note, whereas a noise transient on a pure tone just reads as a click.
+///
+/// Expected to need tuning by ear. Too short and repeated notes smear together;
+/// too deep and it is a gap rather than an articulation.
 constexpr int32_t kChiffTicks     = kCtrlRate / 80;    ///< ~12ms
-constexpr int32_t kChiffNoiseQ15  = 14000;             ///< extra noise at peak
-constexpr int32_t kChiffDipQ12    = 1200;              ///< how far the air dips
+constexpr int32_t kChiffDipQ12    = 1600;              ///< how far the level dips
 
 /// The shortest gap between two chiffs.
 ///
@@ -76,11 +77,16 @@ constexpr int32_t kChiffDipQ12    = 1200;              ///< how far the air dips
 /// note while a deliberate trill smooths into one gesture.
 constexpr int32_t kChiffMinGapTicks = (kCtrlRate * 6) / 100;
 
-/// Vibrato, on legato only: legato wind playing is where vibrato lives, so
-/// pairing them costs no control and reads as one gesture.
-constexpr int32_t kVibratoCents   = 15;
-constexpr uint32_t kVibratoIncQ32 = static_cast<uint32_t>(
-	(5.0 * 4294967296.0) / 3000.0);      ///< ~5Hz at the 3kHz control rate
+/// Vibrato is now the instrument's whole expression rather than a legato
+/// garnish, so its rate and depth come from the knobs — see VibratoFor() in
+/// flute.h. What lives here is only the oscillator that runs at that rate.
+///
+/// Rate arrives as Q8 Hz and has to become a Q32 phase increment per control
+/// tick. Dividing by the control rate would be a runtime divide, so it is a
+/// precomputed reciprocal: 2^32 / (256 * 3000), in Q16.
+///
+/// This constant is tied to kCtrlRate. Change one, change both.
+constexpr uint32_t kVibHzToIncQ16 = 366503876u;
 
 /// Glide rate for legato, as a slew shift. Larger is slower.
 constexpr uint8_t kGlideShift = 9;
@@ -130,8 +136,12 @@ public:
 	/// True while the air is above the sounding threshold — drives the gate.
 	bool Sounding() const { return breath_ > 0; }
 
-	/// Extra noise the chiff is asking for, Q15, on top of the timbre's own.
-	int32_t ChiffNoiseQ15() const { return chiffNoise_; }
+	/// Vibrato rate and depth, set from both knobs at control rate.
+	void SetVibrato(int32_t rateQ8, int32_t cents)
+	{
+		vibRateQ8_ = rateQ8;
+		vibCentsMax_ = cents;
+	}
 
 	/// True if a chiff started on this tick — one blip on Pulse Out 2.
 	bool ChiffFired() const { return chiffFired_; }
@@ -139,21 +149,22 @@ public:
 	/// Which register: 0 = as fingered, 1 = an octave up.
 	int Register() const { return register_; }
 
-	/// Vibrato depth in cents, signed. Zero unless legato.
+	/// Current vibrato offset in cents, signed. Zero when depth is zero.
 	int32_t VibratoCents() const { return vibCents_; }
 
 private:
 	int32_t curved_     = 0;   ///< LEVEL after the curve, before chiff/stop
 	int32_t effort_     = 0;   ///< how hard you are blowing, linear
 	int32_t breath_     = 0;   ///< what the bore actually gets
-	int32_t chiffNoise_ = 0;
 	int32_t chiffTicks_ = 0;
 	int32_t sinceChiff_ = kChiffMinGapTicks;
 	bool    chiffFired_ = false;
 	bool    stopped_    = false;
 	int     register_   = 0;
-	int32_t vibCents_   = 0;
-	uint32_t vibPhase_  = 0;
+	int32_t vibCents_    = 0;
+	int32_t vibRateQ8_   = 0;
+	int32_t vibCentsMax_ = 0;
+	uint32_t vibPhase_   = 0;
 	Articulation artic_ = Articulation::Tongued;
 };
 

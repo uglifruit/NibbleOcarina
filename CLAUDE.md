@@ -122,6 +122,26 @@ Nothing feeds back into the nonlinearity, so it can only colour a pitch that is
 already exact. **If you are tempted to reintroduce a feedback path for
 authenticity, read the devlog first.**
 
+**There is no air path.** v2 mixed filtered noise under the tone as "breath";
+hardware said it added nothing, and it was right. The tone is a pure sine and
+the expression is VIBRATO. Do not reintroduce noise without listening first —
+this is the second time a plausible-on-paper timbre idea has been inaudible in
+the room.
+
+**Vibrato comes from BOTH knobs.** Main sets how much (none below `kVibOnset`,
+full at the top), X sets what kind (fast/wide → fast/tight → slow/wide). The two
+stages of Main must not overlap, or a turn in the lower half both raises the
+level and starts a wobble and neither reads as its own gesture.
+
+**The wavefolder is capped at half its range**, and that is measured: past fold
+2048 the spectral centroid DIPS before rising again, because completing a fold
+returns the fundamental. A knob that brightens then dulls reads as broken.
+
+**The CV cache no longer hits most of the time, deliberately.** Vibrato changes
+the pitch every tick, so the flash-resident `CVOutMillivolts` genuinely has to
+be called — a pitch CV that updated once per note would not carry the vibrato.
+~80 cycles of 4000. Do not "fix" it by throttling the update.
+
 **The breath knob produces TWO curves, and they are not interchangeable.**
 `BreathQ12()` is LEVEL — log-shaped, nearly full by half the travel, and it
 drives the VCA. `EffortQ12()` is linear to the stop and drives brightness,

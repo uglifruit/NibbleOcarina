@@ -11,27 +11,29 @@
 // ---------------------------------------------------------------------------
 //
 //   CV In 1      Four Voltages output — the fingering
-//   CV In 2      breath CV, adds to the knob
+//   CV In 2      pitch offset, +/- semitones
+//   Audio In 1   offsets the Main knob   (used as CV)
+//   Audio In 2   offsets the X knob      (used as CV)
 //   Pulse In 1   tongue: re-articulates the current note
 //
-//   Main         breath          (FINE TUNE during calibration)
-//   X            character: breathy -> pure
-//   Y            scale           (COARSE TUNE during calibration)
+//   Main         level, then VIBRATO DEPTH   (FINE TUNE during calibration)
+//   X            vibrato character + level tilt + fold depth
+//   Y            scale                       (COARSE TUNE during calibration)
 //
-//   Switch UP    legato: glide + vibrato — and nothing else, ever
+//   Switch UP    legato: glide — and nothing else, ever
 //   Switch MID   tongued
-//   Switch DOWN  mute / chiff stop        DOWN held 2s -> calibrate
+//   Switch DOWN  mute                        DOWN held 2s -> calibrate
 //
 // Calibration drones a reference note the whole time it runs, and Y/Main tune
 // it while you teach the fingering — the two use different controls, so they
 // cost each other nothing.
 //
-//   Audio Out 1  the flute
-//   Audio Out 2  its breath noise alone
+//   Audio Out 1  the tone, a sine
+//   Audio Out 2  the same tone, wavefolded as X rises
 //   CV Out 1     1V/oct pitch, root at 0V
-//   CV Out 2     breath envelope
-//   Pulse Out 1  gate: high while sounding
-//   Pulse Out 2  a blip per articulated note
+//   CV Out 2     level — tracks what you hear
+//   Pulse Out 1  a trigger on every note change
+//   Pulse Out 2  the same tone as a square
 //
 // ---------------------------------------------------------------------------
 // STRUCTURE
@@ -90,14 +92,9 @@ constexpr int32_t kScaleShowTicks      = (kCtrlRate * 6) / 5;
 /// than helpful — this is a reference pitch, not the instrument. It also sits
 /// well below the register boundary, so the octave never jumps under the
 /// player's hands while they are trying to tune to it.
-constexpr int32_t kDroneBreath = 900;
+constexpr int32_t kDroneLevel = 900;
 
-/// The drone's own timbre. Plain and clean: mostly tone with a little air so
-/// the pitch is easy to hear against an oscillator, a moderate filter so it is
-/// not shrill, and low drive so it stays a reference rather than a voice.
-constexpr int32_t kDroneAir   = 1400;
-constexpr int32_t kDroneCut   = 5200;
-constexpr int32_t kDroneDrive = 5000;
+
 
 // ---------------------------------------------------------------------------
 // Offset-from-current-position knob pickup, for the tuning controls.
@@ -174,9 +171,8 @@ public:
 	void Setup()
 	{
 		levels_.InitDefault();
-		voice_.Init(0xC0FFEEu);
+		voice_.Init();
 		breath_.Init();
-		ApplyTimbre();
 	}
 
 	virtual void __not_in_flash_func(ProcessSample)() override
@@ -216,25 +212,27 @@ public:
 		else if (ctrlDiv_ == 8) UiTick();
 
 		// --- audio ---------------------------------------------------------
-		// During calibration the voice drones at a fixed breath so there is a
+		// During calibration the voice drones at a fixed level so there is a
 		// steady reference to tune against; in play it follows the knob.
-		const int32_t air = (ui_ == UiMode::Learn) ? kDroneBreath
-		                                          : breath_.BreathQ12();
-		const int32_t v = voice_.Step(air);
+		const int32_t level = (ui_ == UiMode::Learn) ? kDroneLevel : level_;
+		voice_.Step(level);
 
-		AudioOut1(clamp12(v >> 2));
+		// Audio Out 1: the sine. Audio Out 2: the same oscillator wavefolded,
+		// so the two are always at the same pitch and phase and can be mixed
+		// or crossfaded without any comb filtering between them.
+		AudioOut1(clamp12(voice_.Sine() >> 1));
+		AudioOut2(clamp12(voice_.Folded() >> 1));
 
-		// Audio Out 2: the breath-noise component alone. Nearly free — the
-		// noise is already computed for the jet — and genuinely useful patched:
-		// a breath-controlled noise source that tracks the performance.
-		AudioOut2(clamp12(voice_.LastNoise() >> 1));
+		// Pulse Out 2 is the tone as a square, straight off the oscillator.
+		PulseOut2(voice_.Square());
 
-		// --- pulse outs ----------------------------------------------------
-		PulseOut1(air > 0);
+		// Pulse Out 1 is a note-change TRIGGER, not a gate: a fixed-width blip
+		// each time the fingering changes, so it can fire envelopes elsewhere
+		// in time with the card's own note changes.
 		if (pulseTimer_ > 0)
 		{
 			pulseTimer_--;
-			if (pulseTimer_ == 0) PulseOut2(false);
+			if (pulseTimer_ == 0) PulseOut1(false);
 		}
 	}
 
@@ -256,9 +254,21 @@ private:
 			NoteOn(idx);
 		}
 
-		// Breath: knob plus CV In 2 when something is patched there.
-		const int32_t cvAdd = Connected(Input::CV2) ? CVIn2() : 0;
-		breath_.SetKnob(KnobVal(Knob::Main), cvAdd);
+		// The two knobs, each offset by an audio input used as CV.
+		//
+		// AudioIn returns +/-2048 where the knobs are 0..4095, so the offsets
+		// are doubled to cover the full travel — a full-scale CV can sweep the
+		// knob end to end from either extreme. Only active when something is
+		// actually patched, so an unpatched input cannot bias anything.
+		const int32_t mainCv = Connected(Input::Audio1) ? (AudioIn1() << 1) : 0;
+		const int32_t xCv    = Connected(Input::Audio2) ? (AudioIn2() << 1) : 0;
+
+		int32_t xKnob = KnobVal(Knob::X) + xCv;
+		if (xKnob < 0) xKnob = 0;
+		if (xKnob > 4095) xKnob = 4095;
+		xNow_ = xKnob;
+
+		breath_.SetKnob(KnobVal(Knob::Main), mainCv);
 		breath_.SetArticulation(SwitchVal() == Switch::Up ? Articulation::Legato
 		                                                  : Articulation::Tongued);
 
@@ -277,24 +287,25 @@ private:
 		// Pulse In 1 re-articulates without changing the fingering.
 		if (PulseIn1RisingEdge()) Retrigger();
 
-		// ChiffFired() is an edge that Tick() CONSUMES, so it has to be read
-		// first. Checking it after Tick() reads false every time — Pulse Out 2
-		// would never fire and the chiff's extra noise would never be applied,
-		// both silently. The models cannot catch this one: breathsim tests
-		// Breath in isolation and gets the order right by construction; it is
-		// the caller's sequencing that is wrong or right.
-		const bool chiff = breath_.ChiffFired();
+		// Vibrato comes from BOTH knobs: Main sets how much, X sets what kind.
+		// Set before Tick() so the oscillator advances with this tick's values.
+		const Vibrato vib = VibratoFor(breath_.EffortQ12(), xNow_);
+		breath_.SetVibrato(vib.rateQ8, vib.cents);
 
 		breath_.Tick();
 
-		if (chiff)
+		// Level: the breath curve, plus X's small tilt, minus the chiff dip.
+		int32_t lvl = breath_.BreathQ12();
+		if (lvl > 0)
 		{
-			PulseOut2(true);
-			pulseTimer_ = kSampleRate / 500;      // 2ms
+			lvl += XVolumeBoost(xNow_);
+			if (lvl > 4095) lvl = 4095;
 		}
+		level_ = lvl;
+
+		voice_.SetFold(FoldFor(xNow_));
 
 		ReadScale();
-		ApplyTimbre();
 		UpdatePitch();
 		UpdateCVs();
 	}
@@ -355,11 +366,17 @@ private:
 		combo_ = combo;
 		breath_.NoteOn();
 		pitchDirty_ = true;
+
+		// Pulse Out 1: a trigger on every note change.
+		PulseOut1(true);
+		pulseTimer_ = kSampleRate / 500;      // 2ms
 	}
 
 	void Retrigger()
 	{
 		breath_.NoteOn();
+		PulseOut1(true);
+		pulseTimer_ = kSampleRate / 500;
 	}
 
 	// -----------------------------------------------------------------------
@@ -378,34 +395,6 @@ private:
 			scaleShow_ = kScaleShowTicks;
 			pitchDirty_ = true;
 		}
-	}
-
-	/// Push the current breath and X knob into the voice.
-	///
-	/// Both knobs feed all four voice parameters, which is what makes them
-	/// interact rather than sit in separate lanes: breath sets loudness AND
-	/// brightness AND harmonic richness, while X decides how airy the whole
-	/// range is. Soft playing at X fully CCW is nearly all breath; hard
-	/// playing at X fully CW is a clear, strong tone.
-	///
-	/// Cheap enough to run every control tick — four multiplies — so unlike v1
-	/// there is no "has the knob moved" gate to get wrong. That gate was how
-	/// the chiff's extra noise went missing.
-	void __not_in_flash_func(ApplyTimbre)()
-	{
-		// EFFORT, not level.
-		//
-		// This is the whole point of the two curves. Level reaches nearly full
-		// by half the knob's travel, so a timbre driven by level would also
-		// stop changing there and the top half of the sweep would be dead.
-		// Effort keeps climbing to the stop, so past the point where it stops
-		// getting louder the note keeps getting brighter and richer — which is
-		// what "blowing harder" does on a real instrument.
-		Timbre t = TimbreFor(breath_.EffortQ12(), KnobVal(Knob::X));
-		// The chiff rides on top of the standing air amount.
-		t.air += breath_.ChiffNoiseQ15() >> 3;
-		if (t.air > 4096) t.air = 4096;
-		voice_.SetTimbre(t.air, t.cut, t.res, t.drive);
 	}
 
 	/// combo -> degree -> semitone -> increment, and the CV to match.
@@ -441,6 +430,15 @@ private:
 		// outputs would disagree by up to a full octave, and only when tuning
 		// flat, which is the hardest kind of discrepancy to notice.
 		int32_t root = kBaseNote + coarse_;
+
+		// CV In 2 transposes, in semitones, in both directions.
+		//
+		// Quantised to whole semitones on purpose: an imprecise voltage should
+		// move the instrument by a musical interval, not leave everything
+		// slightly sharp. +/-2048 of CV maps to +/-24 semitones, two octaves
+		// either way.
+		if (Connected(Input::CV2)) root += (CVIn2() * 24) >> 11;
+
 		const int32_t maxRoot = kBaseNote + kMaxRootFor[scale_];
 		if (root > maxRoot)     root = maxRoot;
 		if (root < kPitchLoNote) root = kPitchLoNote;
@@ -502,9 +500,18 @@ private:
 		// that positioned the bore, so voice and CV cannot disagree during a
 		// slur — see the note on gliding in pitch space there.
 		//
-		// CVOutMillivolts is flash-resident, so calling it every tick would put
-		// XIP reads in the control path. Only call it when the value changes,
-		// which for a stepped instrument is once per note.
+		// CVOutMillivolts reaches a flash-resident helper, so the cache below
+		// exists to keep XIP reads out of the control path.
+		//
+		// It no longer hits most of the time, and that is expected rather than
+		// a regression: with vibrato running the pitch genuinely changes every
+		// tick, so the call has to happen — a pitch CV that only updated once
+		// per note would simply not carry the vibrato, which is the whole
+		// expression. Measured, the two calls are ~80 cycles of a 4000-cycle
+		// budget and the XIP line stays hot at a 3kHz call rate.
+		//
+		// The cache still earns its place when vibrato is at zero, which is the
+		// entire lower half of the knob.
 		const int32_t mv = PitchMillivolts(cvSemi_, cvCents_);
 		if (mv != cvPitchLast_)
 		{
@@ -512,7 +519,11 @@ private:
 			CVOutMillivolts(0, mv);
 		}
 
-		const int32_t env = (breath_.BreathQ12() * 5000) >> 12;
+		// level_, not BreathQ12(): the audible level includes X's tilt and the
+		// chiff dip, and this output exists so the rest of the rack can follow
+		// what is actually being heard. Deriving it from the raw breath curve
+		// would make it disagree with the sound whenever X was off centre.
+		const int32_t env = (level_ * 5000) >> 12;
 		if (env != cvEnvLast_)
 		{
 			cvEnvLast_ = env;
@@ -554,6 +565,12 @@ private:
 		ui_ = UiMode::Play;
 		combo_ = kComboNone;
 		pitchDirty_ = true;
+		// The drone forced the fold to zero (see TuneOverlay). ControlTick sets
+		// it from the X knob on the very next tick, but do it here too so the
+		// restore does not depend on the order the two happen to run in — that
+		// is precisely the kind of implicit sequencing that has bitten this
+		// file before.
+		voice_.SetFold(FoldFor(KnobVal(Knob::X)));
 	}
 
 	void __not_in_flash_func(LearnTick)()
@@ -681,18 +698,13 @@ private:
 		if (fine_) inc = ApplyFineCents(inc, fine_);
 		voice_.SetIncQ32(inc);
 
-		// The drone sets its OWN timbre, and must.
+		// The drone is a PURE SINE, deliberately.
 		//
-		// ApplyTimbre() derives everything from the breath knob, but during
-		// calibration that knob is the FINE TUNE — so leaving the timbre to it
-		// would make the reference note change character every time you nudged
-		// the tuning, and start from whatever was last set in play.
-		//
-		// Deliberately plain and quiet: mostly tone with a little air so the
-		// pitch is easy to hear against an oscillator, a moderate filter so it
-		// is not shrill over fifteen taps, and low drive so it stays a clean
-		// reference rather than a rich one.
-		voice_.SetTimbre(kDroneAir, kDroneCut, kResMin, kDroneDrive);
+		// Folding is X's job in play, but during calibration X is not being
+		// touched and the reference note should be as easy to tune against as
+		// possible — a fold would put harmonics on it that beat against
+		// whatever you are tuning to.
+		voice_.SetFold(0);
 
 		// Keep the glide anchored, so the first note after calibration does not
 		// slide from wherever the drone happened to be.
@@ -888,6 +900,8 @@ private:
 	int32_t downTicks_ = 0;
 	bool    downFired_ = false;
 
+	int32_t  level_      = 0;   ///< what the voice is given, after every offset
+	int32_t  xNow_       = 0;   ///< X knob after its CV offset
 	int8_t   combo_      = kComboNone;
 	int      scale_      = 0;
 	int32_t  glideSemiQ8_  = 0;   ///< where the glide is now, Q8 semitones

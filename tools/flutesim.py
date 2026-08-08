@@ -8,30 +8,24 @@ than let it drift.
 WHAT THIS FILE EXISTS TO PREVENT
 ---------------------------------------------------------------------------
 
-v1 shipped a jet-driven waveguide whose feedback term contained no breath, so
-the bore drove itself forever. Every symptom from the first hardware session
-came from that one line: "super metallic", and the breath knob never reaching
-silence.
+v1 shipped a waveguide that drove itself: it ignored the breath knob entirely
+and no assertion noticed, because every one of them tested internals. The rule
+since then is that assertions are written against WHAT A PLAYER WOULD REPORT.
 
-The v1 model PASSED. Its assertions checked tuning, stability, DC and harmonic
-presence — none of which noticed that the instrument was ignoring the breath
-knob. Worse, one assertion was actively too lenient: `E(f0) > 0.20 * E(2f0)`
-passed a note whose octave was FIVE TIMES louder than its fundamental.
+v2's air path then turned out to add nothing audible — which no assertion could
+have caught, because "does this contribute to the sound" is a judgement. What
+the model CAN do is prove the controls move the sound as far as they claim, so
+that a knob which feels dead is a design decision rather than a bug.
 
-So the assertions below are written against the symptoms a player would report,
-not against the internals:
-
-    silence          zero breath must be EXACTLY zero out
-    dynamic range    the knob must span at least 30:1 in level
-    monotonic        more breath must always mean more level
-    brightness       more breath must also mean brighter
-    character        X must move air content across a wide, audible range
-    fundamental      the note played must be the note asked for, loudest
-
-Any one of those would have caught v1 before it was ever flashed.
+    silence      zero level must be EXACTLY zero on every output
+    dynamic      the knob must span a wide, monotonic level range
+    vibrato      Main must add none at the bottom and a lot at the top
+    character    X must genuinely change the vibrato's rate AND depth
+    fold         X must genuinely change Audio Out 2's harmonics
+    phase        the three outputs must stay locked to one oscillator
 
 Run:  python tools/flutesim.py
-      python tools/flutesim.py --grid    print the breath x X table
+      python tools/flutesim.py --grid    print the Main x X table
 """
 
 import math
@@ -39,15 +33,16 @@ import sys
 
 SR = 48000
 
-NOISE_LP_Q15 = 9000
-CUT_MIN, CUT_MAX = 2600, 13000
-RES_MIN, RES_MAX = 9000, 13000
-AIR_MAX, AIR_MIN = 3450, 1800
-AIR_GAIN = 2048
-AIR_BREATH_TILT = 700
-DRIVE_MIN, DRIVE_SPAN = 4000, 20000
+FOLD_MAX = 2048
+FOLD_PASSES = 4
 DC_POLE_Q15 = 32735
-MUTE_CUT = 200
+
+VIB_RATE_FAST_Q8 = 8 * 256
+VIB_RATE_SLOW_Q8 = 3 * 256
+VIB_DEPTH_WIDE = 50
+VIB_DEPTH_TIGHT = 10
+VIB_ONSET = 2000
+X_VOLUME_TILT = 700
 
 FAILURES = []
 
@@ -95,108 +90,105 @@ def midi_hz(n):
     return 440.0 * 2 ** ((n - 69) / 12.0)
 
 
-def inc_for(hz):
-    return int(round(hz * 4294967296.0 / SR)) & 0xFFFFFFFF
-
-
 # ---------------------------------------------------------------------------
 # The port
 # ---------------------------------------------------------------------------
 
-def timbre_for(breath, x):
-    """flute.cpp TimbreFor()."""
-    b = max(0, min(4095, breath))
+def lerp(a, b, t):
+    return a + (((b - a) * t) >> 12)
+
+
+def vibrato_for(main_q12, x):
+    """flute.cpp VibratoFor(). Returns (rate_q8, cents)."""
     x = max(0, min(4095, x))
-    air = AIR_MAX - (((AIR_MAX - AIR_MIN) * x) >> 12)
-    air -= (AIR_BREATH_TILT * b) >> 12
-    if air < 0:
-        air = 0
-    cut = CUT_MIN + ((7000 * b) >> 12) + ((3000 * x) >> 12)
-    if cut > CUT_MAX:
-        cut = CUT_MAX
-    res = RES_MIN + (((RES_MAX - RES_MIN) * x) >> 12)
-    drive = DRIVE_MIN + ((DRIVE_SPAN * b) >> 12)
-    return air, cut, res, drive
+    if x < 2048:
+        t = x << 1
+        rate = VIB_RATE_FAST_Q8
+        depth = lerp(VIB_DEPTH_WIDE, VIB_DEPTH_TIGHT, t)
+    else:
+        t = (x - 2048) << 1
+        rate = lerp(VIB_RATE_FAST_Q8, VIB_RATE_SLOW_Q8, t)
+        depth = lerp(VIB_DEPTH_TIGHT, VIB_DEPTH_WIDE, t)
+
+    m = main_q12
+    if m < VIB_ONSET:
+        return rate, 0
+    m = min(4095, m)
+    span = 4095 - VIB_ONSET
+    grow = ((m - VIB_ONSET) << 12) // span
+    return rate, (depth * grow) >> 12
+
+
+def x_volume_boost(x):
+    x = max(0, min(4095, x))
+    return (X_VOLUME_TILT * x) >> 12
+
+
+def fold_for(x):
+    x = max(0, min(4095, x))
+    return (FOLD_MAX * x) >> 12
 
 
 class Flute:
-    def __init__(self, seed=0x1234567):
+    def __init__(self):
         self.ph = 0
         self.inc = 0
-        self.rng = seed
-        self.n1 = self.n2 = 0
-        self.b1 = self.b2 = 0
-        self.dcx = self.dcy = 0
-        self.last_noise = 0
+        self.fold = 0
         self.muted = False
-        self.air, self.cut, self.res, self.drive = AIR_MIN, CUT_MIN, RES_MIN, DRIVE_MIN
+        self.sine = 0
+        self.folded = 0
+        self.square = False
+        self.dcx1 = self.dcy1 = 0
+        self.dcx2 = self.dcy2 = 0
 
     def set_pitch(self, hz):
-        self.inc = inc_for(hz)
+        self.inc = int(round(hz * 4294967296.0 / SR)) & 0xFFFFFFFF
 
-    def set_timbre(self, air, cut, res, drive):
-        self.air = max(0, min(4096, air))
-        cut = max(512, min(CUT_MAX, cut))
-        self.res, self.drive = res, drive
-        self.cut = MUTE_CUT if self.muted else cut
-
-    def mute(self):
-        self.muted = True
-        self.cut = MUTE_CUT
-
-    def unmute(self):
-        self.muted = False
-
-    def step(self, breath):
-        if breath <= 0:
-            self.last_noise = 0
-            return 0
+    def step(self, level):
+        if level <= 0 or self.muted:
+            self.sine = 0
+            self.folded = 0
+            self.square = False
+            return
 
         self.ph = (self.ph + self.inc) & 0xFFFFFFFF
-        tone = fast_sin(self.ph) >> 4
+        raw = fast_sin(self.ph) >> 3
 
-        d = (tone * self.drive) >> 12
-        d = max(-4096, min(4096, d))
-        d2 = (d * d) >> 12
-        d3 = (d2 * d) >> 12
-        tone = d - ((d3 * 21845) >> 16)
+        s = (raw * level) >> 12
+        y = s - self.dcx1 + ((self.dcy1 * DC_POLE_Q15 + 16384) >> 15)
+        self.dcx1, self.dcy1 = s, y
+        self.sine = y
 
-        self.rng ^= (self.rng << 13) & 0xFFFFFFFF
-        self.rng ^= self.rng >> 17
-        self.rng ^= (self.rng << 5) & 0xFFFFFFFF
-        white = ((self.rng >> 17) - 16384) >> 2
-        self.n1 += ((white - self.n1) * NOISE_LP_Q15) >> 15
-        self.n2 += ((self.n1 - self.n2) * NOISE_LP_Q15) >> 15
-        air = (self.n2 * AIR_GAIN) >> 12
-        self.last_noise = (air * breath) >> 12
+        f = (raw * (4096 + self.fold * 3)) >> 12
+        for _ in range(FOLD_PASSES):
+            if f > 4096:
+                f = 8192 - f
+            elif f < -4096:
+                f = -8192 - f
+            else:
+                break
+        f = (f * level) >> 12
+        y = f - self.dcx2 + ((self.dcy2 * DC_POLE_Q15 + 16384) >> 15)
+        self.dcx2, self.dcy2 = f, y
+        self.folded = y
 
-        src = (tone * (4096 - self.air) + air * self.air) >> 12
-
-        self.b1 += (((src - self.b1) + (((self.b1 - self.b2) * self.res) >> 15))
-                    * self.cut) >> 15
-        self.b2 += ((self.b1 - self.b2) * self.cut) >> 15
-        out = self.b2
-
-        out = (out * breath) >> 12
-
-        y = out - self.dcx + ((self.dcy * DC_POLE_Q15 + 16384) >> 15)
-        self.dcx = out
-        self.dcy = y
-        return clamp(y)
+        self.square = raw >= 0
 
 
-def run(hz, breath, x=2048, n=20000, skip=10000, mute=False):
+def run(hz, level, x=0, n=20000, skip=10000, mute=False):
     f = Flute()
     f.set_pitch(hz)
+    f.fold = fold_for(x)
     if mute:
-        f.mute()
-    f.set_timbre(*timbre_for(breath, x))
-    out = []
+        f.muted = True
+    sines, folds, squares = [], [], []
     for i in range(n):
-        v = f.step(breath)
+        f.step(level)
         if i >= skip:
-            out.append(v)
-    return out
+            sines.append(f.sine)
+            folds.append(f.folded)
+            squares.append(f.square)
+    return sines, folds, squares
 
 
 # ---------------------------------------------------------------------------
@@ -208,9 +200,6 @@ def rms(x):
 
 
 def goertzel(x, f):
-    """Energy at exactly f. Unambiguous, unlike autocorrelation, which locked
-    onto harmonics AND sub-harmonics while v1 was being built and produced
-    confident wrong answers both times."""
     w = 2 * math.pi * f / SR
     c = 2 * math.cos(w)
     s1 = s2 = 0.0
@@ -224,191 +213,158 @@ def harmonics(out, f0, n=8):
     return [goertzel(out, f0 * k) for k in range(1, n + 1)]
 
 
-def centroid(out, f0, n=9):
+def brightness(out, f0, n=8):
+    """Spectral centroid in harmonic numbers. 1.0 = a pure sine."""
     h = harmonics(out, f0, n)
     return sum((i + 1) * v for i, v in enumerate(h)) / max(sum(h), 1e-9)
 
 
-def tonal_fraction(out, f0):
-    """1.0 = pure tone, 0 = pure noise."""
-    tot = sum(v * v for v in out) / len(out)
-    harm = sum(goertzel(out, f0 * k) ** 2 for k in range(1, 25)) * 2
-    return harm / max(tot, 1e-9)
-
-
 # ---------------------------------------------------------------------------
-# Tests — written against what a player would notice
+# Tests
 # ---------------------------------------------------------------------------
 
 def test_silence():
-    """THE assertion v1 needed and did not have.
-
-    v1's excitation did not depend on breath, so the bore drove itself and the
-    card never went quiet however far the knob came down. Nothing in its model
-    ever checked.
-    """
     print("silence")
-    out = run(220.0, 0, n=8000, skip=0)
-    check("zero breath is EXACTLY zero", max(abs(v) for v in out), 0)
+    s, f, q = run(220.0, 0, n=4000, skip=0)
+    check("zero level: sine is silent", max(abs(v) for v in s), 0)
+    check("zero level: fold is silent", max(abs(v) for v in f), 0)
+    check("zero level: square stays low", any(q), False)
 
-    # And it must stay silent — no tail, no ring, no creep.
-    f = Flute()
-    f.set_pitch(220.0)
-    f.set_timbre(*timbre_for(3000, 2048))
-    for _ in range(8000):
-        f.step(3000)
-    tail = [f.step(0) for _ in range(8000)]
-    check("and it stops instantly when breath is removed",
-          max(abs(v) for v in tail), 0)
+    s, f, _ = run(220.0, 3000, x=2048, mute=True, n=4000, skip=0)
+    check("muted: sine is silent", max(abs(v) for v in s), 0)
+    check("muted: fold is silent", max(abs(v) for v in f), 0)
 
 
 def test_dynamic_range():
-    """v1 spanned 1.2:1 across the whole knob and got QUIETER at the top."""
     print("dynamic range")
-    levels = [(br, rms(run(220.0, br))) for br in
-              (100, 300, 700, 1400, 2400, 3400, 4095)]
-    for br, r in levels:
-        print(f"        breath {br:4d} -> rms {r:8.1f}")
-    lo = levels[0][1]
-    hi = levels[-1][1]
-    check_true("the knob spans at least 30:1", hi / max(lo, 1e-9) >= 30,
-               f"{hi/max(lo,1e-9):.0f}:1")
-
-    rising = all(levels[i][1] > levels[i - 1][1] for i in range(1, len(levels)))
-    check("more breath is always louder", rising, True)
+    pts = [(lv, rms(run(220.0, lv)[0])) for lv in (100, 400, 1000, 2000, 3000, 4095)]
+    for lv, r in pts:
+        print(f"        level {lv:4d} -> rms {r:8.1f}")
+    check_true("spans at least 30:1", pts[-1][1] / max(pts[0][1], 1e-9) >= 30,
+               f"{pts[-1][1]/max(pts[0][1],1e-9):.0f}:1")
+    check("monotonic", all(pts[i][1] > pts[i-1][1] for i in range(1, len(pts))),
+          True)
 
 
-def test_brightness_tracks_breath():
-    """Blowing harder must sound harder, not just louder — otherwise the knob
-    is a volume control wearing an instrument's name."""
-    print("breath -> brightness")
-    pts = [(br, centroid(run(220.0, br), 220.0)) for br in (400, 1400, 2600, 4095)]
-    for br, c in pts:
-        print(f"        breath {br:4d} -> centroid {c:5.2f}")
-    check_true("brightness rises with breath", pts[-1][1] > pts[0][1] * 1.3,
-               f"{pts[0][1]:.2f} -> {pts[-1][1]:.2f}")
-
-
-def test_x_is_a_character_axis():
-    """X must move the tone between genuinely airy and genuinely pure.
-
-    The first attempt at this mapping swept air_mix 220..1900, which measured
-    0.97 tonal at BOTH ends — three quarters of the knob doing nothing audible.
-    The useful range turned out to be narrow and high.
-    """
-    print("X -> character")
-    pts = [(x, tonal_fraction(run(220.0, 2200, x), 220.0))
-           for x in (0, 1365, 2730, 4095)]
-    for x, t in pts:
-        print(f"        X {x:4d} -> tonal {t:5.3f}")
-    # Reported from hardware: "breath is basically too loud all the time, next
-    # to note". The air must be a texture UNDER the pitch, not level with it —
-    # so the CCW end is breathy but still clearly pitched.
-    check_true("fully CCW is airy but the note still leads",
-               0.70 < pts[0][1] < 0.95, f"tonal {pts[0][1]:.3f}")
-    check_true("fully CW is nearly pure", pts[-1][1] > 0.92,
-               f"tonal {pts[-1][1]:.3f}")
-    check_true("and the sweep is monotonic",
-               all(pts[i][1] > pts[i - 1][1] for i in range(1, len(pts))), "")
-
-
-def test_plays_the_right_note():
-    """v1's octave silently took over above MIDI 60 — at MIDI 72 the second
-    harmonic was 2.4x the fundamental, so the card played an octave above what
-    CV Out 1 reported. Its own assertion allowed a 5:1 octave and passed."""
-    print("pitch")
-    worst = (99.0, None)
-    for n in range(36, 92, 5):
-        f0 = midi_hz(n)
-        out = run(f0, 2500)
-        h = harmonics(out, f0, 2)
-        r = h[0] / max(h[1], 1e-9)
-        if r < worst[0]:
-            worst = (r, n)
-    check_true("the fundamental is always the loudest partial",
-               worst[0] > 2.0, f"worst {worst[0]:.1f}x at MIDI {worst[1]}")
-
-    # And it is the note that was asked for.
-    worst_c = 0.0
-    for n in (36, 48, 60, 72, 84, 91):
-        f0 = midi_hz(n)
-        out = run(f0, 2500)
-        best = max(((goertzel(out, f0 * r), r) for r in
-                    (0.25, 0.5, 1.0, 2.0, 4.0)))
-        if best[1] != 1.0:
-            check(f"MIDI {n} plays its own pitch", best[1], 1.0)
-        # fine pitch, by peak search near the target
-        f, e = f0, -1
-        ff = f0 * 0.97
-        while ff < f0 * 1.03:
-            g = goertzel(out, ff)
-            if g > e:
-                e, f = g, ff
-            ff *= 1.0005
-        worst_c = max(worst_c, abs(1200 * math.log2(f / f0)))
-    check_true("in tune to 5 cents across the range", worst_c < 5.0,
-               f"{worst_c:.2f}c")
-
-
-def test_not_metallic():
-    """The reported symptom, as a number.
-
-    v1 measured h2 = 1.14x the fundamental, h5 = 0.64, h8 = 0.41 — a spiky
-    spectrum, which is what "metallic" sounds like. A flute is nearly a sine
-    with a little h2/h3.
-    """
-    print("tone")
-    out = run(220.0, 2500)
-    h = harmonics(out, 220.0, 8)
-    for i, v in enumerate(h):
-        print(f"        h{i+1} {v/h[0]:6.3f} " + "#" * int(30 * v / h[0]))
-    check_true("the fundamental dominates every harmonic",
-               all(v < h[0] for v in h[1:]),
-               f"loudest partial is {max(h[1:])/h[0]:.2f}x h1")
-    check_true("no harsh upper spectrum",
-               all(v < 0.5 * h[0] for v in h[4:]),
-               f"max h5+ is {max(h[4:])/h[0]:.2f}x h1")
-
-
-def test_stability():
-    print("stability")
+def test_vibrato_grows_with_main():
+    """THE expression. Main must add none at the bottom and a lot at the top,
+    with a clean handover from the level stage."""
+    print("vibrato vs Main")
+    for m in (0, 1000, 2000, 2500, 3200, 4095):
+        rate, cents = vibrato_for(m, 0)
+        print(f"        main {m:4d} -> {cents:3d} cents at {rate/256:.1f}Hz")
+    check("no vibrato below the onset", vibrato_for(1999, 0)[1], 0)
+    check("still none exactly at the onset", vibrato_for(2000, 0)[1], 0)
+    check_true("full depth at the top", vibrato_for(4095, 0)[1] >= VIB_DEPTH_WIDE - 1,
+               f"{vibrato_for(4095,0)[1]} cents")
+    prev = -1
     bad = []
-    for n in (36, 60, 91):
-        for br in (200, 1200, 2500, 4095):
-            for x in (0, 2048, 4095):
-                out = run(midi_hz(n), br, x, n=8000, skip=4000)
-                pk = max(abs(v) for v in out)
-                if pk > 30000:
-                    bad.append((n, br, x, pk))
-    check("nothing clips at any corner", bad, [])
+    for m in range(4096):
+        c = vibrato_for(m, 0)[1]
+        if c < prev:
+            bad.append(m)
+        prev = c
+    check("depth never goes backwards", bad, [])
 
 
-def test_dc():
-    print("DC blocker")
-    out = run(220.0, 4095)
-    mean = sum(out) / len(out)
-    check_true("output is DC-free at full breath", abs(mean) < 30,
-               f"mean {mean:+.1f}")
+def test_x_morphs_character():
+    """X must genuinely move BOTH rate and depth, through three anchors."""
+    print("vibrato vs X")
+    pts = []
+    for x in (0, 1024, 2048, 3072, 4095):
+        rate, cents = vibrato_for(4095, x)
+        pts.append((x, rate / 256.0, cents))
+        print(f"        X {x:4d} -> {cents:3d} cents at {rate/256:.1f}Hz")
+
+    check_true("CCW is fast and wide", pts[0][1] > 7.5 and pts[0][2] >= 45,
+               f"{pts[0][1]:.1f}Hz {pts[0][2]}c")
+    check_true("middle is fast and tight", pts[2][1] > 7.5 and pts[2][2] <= 12,
+               f"{pts[2][1]:.1f}Hz {pts[2][2]}c")
+    check_true("CW is slow and wide", pts[-1][1] < 3.5 and pts[-1][2] >= 45,
+               f"{pts[-1][1]:.1f}Hz {pts[-1][2]}c")
 
 
-def test_mute():
-    print("chiff stop")
-    quiet = rms(run(220.0, 3000, mute=True))
-    loud = rms(run(220.0, 3000))
-    print(f"        open {loud:.0f} -> muted {quiet:.0f}")
-    check_true("muting drops the level hard", quiet < loud * 0.25,
-               f"{100*quiet/max(loud,1e-9):.0f}% of open")
+def test_x_tilts_volume():
+    print("level tilt vs X")
+    lo, hi = x_volume_boost(0), x_volume_boost(4095)
+    print(f"        X 0 -> +{lo},  X 4095 -> +{hi}")
+    check("no boost at CCW", lo, 0)
+    check_true("a small boost at CW", 400 < hi < 1000, f"+{hi}")
+
+
+def test_fold_adds_harmonics():
+    """Audio Out 2 must go somewhere audible as X rises."""
+    print("wavefold vs X")
+    f0 = 220.0
+    pts = []
+    for x in (0, 1024, 2048, 3072, 4095):
+        _, folded, _ = run(f0, 3000, x)
+        b = brightness(folded, f0)
+        pts.append((x, b))
+        h = harmonics(folded, f0, 6)
+        m = max(h)
+        print(f"        X {x:4d} -> centroid {b:5.2f}   "
+              + " ".join(f"{v/m:4.2f}" for v in h))
+    check_true("X=0 is a pure sine", pts[0][1] < 1.05, f"centroid {pts[0][1]:.2f}")
+    check_true("X=max is much richer", pts[-1][1] > 2.0,
+               f"centroid {pts[-1][1]:.2f}")
+    # Monotonic, and this is why kFoldMax stops at 2048: past there the
+    # centroid dips (3.60 -> 3.00) as a completing fold returns the
+    # fundamental, and a knob that brightens then dulls reads as broken.
+    check("richness rises with X, without dipping back",
+          all(pts[i][1] >= pts[i-1][1] - 0.02 for i in range(1, len(pts))), True)
+
+
+def test_outputs_agree():
+    """The three shapes come from one oscillator, so they must stay locked.
+
+    If they drifted, mixing Audio 1 and Audio 2 would comb-filter and the square
+    on Pulse Out 2 would not line up with either.
+    """
+    print("output phase")
+    f0 = 220.0
+    sines, folds, squares = run(f0, 3000, x=1024)
+    flips = [i for i in range(1, len(squares)) if squares[i] and not squares[i-1]]
+    period = SR / f0
+    gaps = [flips[i] - flips[i-1] for i in range(1, len(flips))]
+    check_true("square runs at the oscillator's pitch",
+               abs(sum(gaps)/len(gaps) - period) < 2,
+               f"{sum(gaps)/len(gaps):.1f} vs {period:.1f} samples")
+    check_true("fold shares the pitch",
+               goertzel(folds, f0) > goertzel(folds, f0 * 1.5), "")
+
+
+def test_no_dc():
+    print("DC")
+    for x in (0, 2048, 4095):
+        s, f, _ = run(220.0, 4095, x)
+        ms, mf = sum(s) / len(s), sum(f) / len(f)
+        check_true(f"X={x}: sine and fold are DC-free",
+                   abs(ms) < 30 and abs(mf) < 30, f"{ms:+.1f} / {mf:+.1f}")
+
+
+def test_no_clipping():
+    print("headroom")
+    bad = []
+    for x in (0, 2048, 4095):
+        for lv in (1000, 3000, 4095):
+            s, f, _ = run(220.0, lv, x, n=8000, skip=4000)
+            pk = max(max(abs(v) for v in s), max(abs(v) for v in f))
+            if pk > 8200:
+                bad.append((x, lv, pk))
+    check("nothing exceeds the output range", bad, [])
 
 
 def grid():
-    print("\nbreath (down) x X (across):  rms / tonal-fraction\n")
-    print(f"{'breath':>7} " + "".join(f"{'X=' + str(x):>16}"
-                                      for x in (0, 2048, 4095)))
-    for br in (300, 1000, 2000, 3000, 4095):
-        row = f"{br:7d} "
+    print("\nMain (down) x X (across):  rms / vibrato cents @ Hz\n")
+    print(f"{'main':>6} " + "".join(f"{'X=' + str(x):>22}" for x in (0, 2048, 4095)))
+    for m in (500, 1500, 2500, 3300, 4095):
+        row = f"{m:6d} "
         for x in (0, 2048, 4095):
-            out = run(220.0, br, x)
-            row += f"{rms(out):8.0f}/{tonal_fraction(out, 220.0):5.2f} "
+            lvl = min(4095, m + x_volume_boost(x))
+            r = rms(run(220.0, lvl, x)[0])
+            rate, cents = vibrato_for(m, x)
+            row += f"{r:8.0f} /{cents:3d}c@{rate/256:.1f}Hz "
         print(row)
 
 
@@ -420,13 +376,13 @@ def main():
     print("flutesim — model of flute.cpp\n")
     test_silence()
     test_dynamic_range()
-    test_brightness_tracks_breath()
-    test_x_is_a_character_axis()
-    test_plays_the_right_note()
-    test_not_metallic()
-    test_stability()
-    test_dc()
-    test_mute()
+    test_vibrato_grows_with_main()
+    test_x_morphs_character()
+    test_x_tilts_volume()
+    test_fold_adds_harmonics()
+    test_outputs_agree()
+    test_no_dc()
+    test_no_clipping()
 
     print()
     if FAILURES:

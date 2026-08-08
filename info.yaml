@@ -3,7 +3,7 @@ Name: NIBBLE OCARINA
 short-description: Turns the Workshop System's four buttons into the finger holes of a flute you blow with a knob
 Language: C++ (ComputerCard)
 Creator: Andy Jenkinson (uglifruit)
-Version: "2.1.0"
+Version: "3.0.0"
 Status: Released
 License: CC-BY-4.0
 repository: https://github.com/uglifruit/NibbleOcarina
@@ -17,7 +17,7 @@ contact:
 
 uf2:
   - path: UF2/ocarina.uf2
-    name: NIBBLE OCARINA 2.1.0
+    name: NIBBLE OCARINA 3.0.0
 
 tags:
   - flute
@@ -37,12 +37,19 @@ summary: |
   fingerings. The Main knob is your breath - turn it up and the instrument
   speaks, turn it down and it stops. Blow hard and it jumps the octave.<br><br>
 
-  Blowing harder is louder, brighter and richer all at once, so the Main knob is
-  a real dynamics control rather than a volume fader. X decides how airy the
-  whole range is, from a soft breathy whisper to a clear focused tone, and the
-  two multiply: soft playing with X anticlockwise is nearly all breath, hard
-  playing with X clockwise is a strong clear tone. In tune to under a cent
-  across three and a half octaves.<br><br>
+  The tone is a pure sine and the expression is VIBRATO. Turn the Main knob up
+  and it comes quickly to full volume; keep going and vibrato grows on top - so
+  a phrase moves from quiet and steady, through loud and steady, into loud and
+  singing. X decides what kind of vibrato, morphing from fast and wide, through
+  fast and tight, to slow and wide, while also tilting the level a little and
+  opening a wavefolder on Audio Out 2. In tune to under a cent across four and
+  a half octaves.<br><br>
+
+  THREE OUTPUTS, ONE OSCILLATOR - Audio Out 1 is the sine, Audio Out 2 the same
+  wave folded, Pulse Out 2 the same wave squared. All identical in pitch and
+  phase, so they mix without comb filtering and the square always lines up.
+  CV Out 1 carries the pitch INCLUDING the vibrato, and CV Out 2 the level, so
+  the rest of the rack can follow exactly what is being heard.<br><br>
 
   SETUP - patch one Four Voltages output into CV In 1. That is the whole
   required patch. Calibration starts by itself at power-on - hold each
@@ -103,9 +110,17 @@ panel:
       type: cv
       description: Patch one output of the Four Voltages module here. This is the fingering. The card learns which voltage each button combination produces, so it works at any position of the Four Voltages knob - re-learn whenever you move it. It also measures how well separated the combinations are and tells you, rather than guessing.
     - id: CVIn2
-      name: Breath
+      name: Pitch offset
       type: cv
-      description: Adds to the Main knob, so an envelope or LFO can blow the instrument. Only active when something is actually patched, and it sums rather than replacing - set a floor on the knob and let the CV push above it, or leave the knob at zero and let the CV do all the blowing. Since breath also decides the register, a large enough CV will jump the octave on its own.
+      description: Transposes the whole instrument, up to two octaves either way. Quantised to whole semitones on purpose - an imprecise voltage should move things by a musical interval rather than leaving everything slightly sharp. Only active when something is actually patched.
+    - id: AudioIn1
+      name: Main offset
+      type: audio
+      description: Used as a CV rather than as audio - it offsets the Main knob, so an envelope or LFO can play the level and the vibrato. Doubled on the way in, because the audio inputs are half the range of the knobs, so a full-scale CV can sweep the knob end to end from either extreme. Only active when something is patched.
+    - id: AudioIn2
+      name: X offset
+      type: audio
+      description: Used as a CV rather than as audio - it offsets the X knob, so the vibrato character, the level tilt and the wavefold can all be modulated together. Same doubling as Audio In 1, and likewise only active when something is patched.
     - id: PulseIn1
       name: Tongue
       type: pulse
@@ -120,25 +135,25 @@ panel:
       type: cv
       description: "Calibrated 1V/oct pitch. The root of the scale is 0V, so an oscillator sitting at its own zero is already in tune. It follows everything the internal voice does - the fine tune, the vibrato, the octave jump, and the glide during a legato slur, which slides rather than stepping. The two are computed from the same numbers precisely so they cannot disagree."
     - id: CVOut2
-      name: Breath
+      name: Level
       type: cv
-      description: The breath envelope as a control voltage, 0 to 5V, after the curve and after the chiff dip - so it carries the articulation as well as the level. The obvious patch is into a filter so something else in the rack opens as you blow.
+      description: The level as a control voltage, 0 to 5V, after the knob curve, after X's tilt and after the articulation dip - so it tracks exactly what you are hearing rather than just where the knob is. The obvious patch is into a filter or VCA so something else in the rack follows the phrasing.
     - id: AudioOut1
       name: Flute
       type: audio
-      description: The instrument. A tuned oscillator through a soft saturator, mixed with filtered breath noise, shaped by a resonant lowpass standing in for the bore and scaled by a breath VCA - all at 48kHz in fixed point. Range is C2 to G6, three and a half octaves, in tune to under a cent throughout.
+      description: The instrument - a pure sine at the fingered pitch, carrying the vibrato, scaled by the level. Range is C2 to G6, four and a half octaves, in tune to under a cent throughout. Deliberately plain - the expression here is the vibrato and the phrasing, not the timbre, and Audio Out 2 is where the harmonic interest lives.
     - id: AudioOut2
-      name: Breath noise
+      name: Wavefold
       type: audio
-      description: The breath-noise component alone, before it reaches the bore filter, including the chiff bursts. Nearly free to produce since the noise is already computed for the voice, and genuinely useful patched - a breath-controlled noise source that tracks the performance exactly. Mix it back with Audio Out 1 to thicken the tone, or send it alone into a filter or a reverb for air and room.
+      description: The SAME oscillator as Audio Out 1, wavefolded - a triangle reflection that adds a pair of odd harmonics per fold, so it thickens into something reedy rather than into fuzz. X sets the depth, from identical to Audio Out 1 at fully anticlockwise to hollow and third-heavy at clockwise. Because both outputs share one oscillator they are always at the same pitch and phase, so mixing or crossfading between them cannot comb filter.
     - id: PulseOut1
-      name: Gate
+      name: Note trigger
       type: pulse
-      description: High for as long as the instrument is sounding - that is, whenever breath is above the silence threshold. Goes low when you stop blowing or hold the chiff stop, so it is a genuine note-length gate rather than a trigger.
+      description: A short blip every time the fingering changes, and on a tongue from Pulse In 1. A trigger rather than a gate, so envelopes elsewhere in the rack fire in time with the card's own note changes.
     - id: PulseOut2
-      name: Tongue
+      name: Square
       type: pulse
-      description: A short blip on every articulated note, so envelopes elsewhere can be struck in time with the card's own articulation. Silent in legato, and rate-limited during very fast trills for the same reason the chiff is - a chiff per note at trill speed is a stutter, not a trill.
+      description: The same oscillator as the two audio outputs, as a square wave - so it is an audio-rate signal at the fingered pitch rather than a control pulse. Taken from the oscillator's sign rather than from the level-scaled audio, so it stays clean as the level approaches silence instead of chattering around zero.
 
 controls:
   switch:
@@ -158,10 +173,10 @@ controls:
     -
       main:
         name: Breath
-        description: "How hard you are blowing, and the card's only way to be silent - below about seven percent of travel the instrument does not sound at all. It does two things in sequence: level rises FAST and is nearly full by half the travel, the way ears actually hear loudness, and past that point the knob stops adding volume and starts adding brightness and harmonic richness instead. So the bottom half is how loud and the top half is how hard, which is what leaning into a real instrument feels like. The octave jump sits around seventy percent, with a hysteresis band so it cannot flutter. DURING CALIBRATION this becomes fine tune, plus or minus one hundred cents."
+        description: "The card's only way to be silent - below about seven percent of travel the instrument does not sound at all. It does two things in sequence: level rises FAST and is nearly full by half the travel, the way ears actually hear loudness, and past that point the knob stops adding volume and starts adding VIBRATO instead. So the bottom half is how loud and the top half is how much it sings, and a phrase can move from quiet and steady through loud and steady into loud and singing on one control. The octave jump sits around seventy percent, with a hysteresis band so it cannot flutter. DURING CALIBRATION this becomes fine tune, plus or minus one hundred cents."
       x:
         name: Timbre
-        description: How airy the tone is, and it works WITH the breath knob rather than beside it. Fully anticlockwise is soft and very breathy - airy, wooden, half air by energy. Fully clockwise is pure and focused with the noise almost gone. Because breath also thins the air out as you lean in, soft playing at the anticlockwise end is nearly all breath while hard playing at the clockwise end is a strong clear tone. The useful range is narrower than it looks and the knob is scaled to sit inside it - a linear sweep of the underlying parameter would waste three quarters of the travel on no audible change.
+        description: "What KIND of vibrato the Main knob adds, morphing through three characters: fully anticlockwise is fast and wide (8Hz, 50 cents) which is dramatic, the centre is fast and tight (8Hz, 10 cents) which is nervous and close, and fully clockwise is slow and wide (3Hz, 50 cents) which is operatic. Turning it up also tilts the level a little and opens the wavefolder on Audio Out 2, so the clockwise end is slower-vibrato, slightly louder and more harmonically complex at once. The fold deliberately stops at half its available range - past that point the harmonics dip before rising again, and a knob that gets brighter then duller reads as broken."
       y:
         name: Scale
         description: "One of twelve scales, ordered dark to bright from fully anticlockwise, shown as a bar on the LEDs while you turn it: Phrygian, Hirajoshi, Harmonic Minor, Natural Minor, Minor Pentatonic, m7 Arpeggio, Dorian, Major Pentatonic, Ionian (Major), Maj7 Arpeggio, Whole Tone, Chromatic. Because the combinations are DEGREES rather than pitches, the scale also sets the range - a four-note arpeggio spreads them over three octaves while Chromatic packs them into just over one. The two arpeggios are wider than the bore can reach, so their top degree or two repeat the highest note rather than going out of tune. In TUNING this becomes coarse tune, plus or minus twelve semitones."

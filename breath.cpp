@@ -11,12 +11,12 @@ namespace nib {
 void Breath::Init()
 {
 	curved_ = breath_ = effort_ = 0;
-	chiffNoise_ = chiffTicks_ = 0;
+	chiffTicks_ = 0;
 	sinceChiff_ = kChiffMinGapTicks;
 	chiffFired_ = false;
 	stopped_ = false;
 	register_ = 0;
-	vibCents_ = 0;
+	vibCents_ = vibRateQ8_ = vibCentsMax_ = 0;
 	vibPhase_ = 0;
 	artic_ = Articulation::Tongued;
 }
@@ -123,27 +123,26 @@ void Breath::Tick()
 
 	if (sinceChiff_ < kChiffMinGapTicks) sinceChiff_++;
 
-	if (chiffTicks_ > 0)
-	{
-		chiffTicks_--;
-		// Linear decay over the burst. An exponential would be more physical
-		// but the whole event is 12ms — nobody can hear the difference, and
-		// linear costs one subtract.
-		chiffNoise_ = (kChiffNoiseQ15 * chiffTicks_) / kChiffTicks;
-	}
-	else
-	{
-		chiffNoise_ = 0;
-	}
+	if (chiffTicks_ > 0) chiffTicks_--;
 
-	// Vibrato, legato only.
-	if (artic_ == Articulation::Legato)
+	// Vibrato. Always available now — its depth is set by the knobs, and a
+	// depth of zero is how "no vibrato" is expressed, rather than by an
+	// articulation mode gating it on and off.
+	if (vibCentsMax_ > 0)
 	{
-		vibPhase_ += kVibratoIncQ32;
-		vibCents_ = (fast_sin(vibPhase_) * kVibratoCents) >> 15;
+		// Q8 Hz -> Q32 phase increment per control tick, via a precomputed
+		// reciprocal. A runtime divide here would be a libgcc call on this chip.
+		const uint32_t inc = static_cast<uint32_t>(
+			(static_cast<uint64_t>(static_cast<uint32_t>(vibRateQ8_))
+			 * kVibHzToIncQ16) >> 16);
+		vibPhase_ += inc;
+		vibCents_ = (fast_sin(vibPhase_) * vibCentsMax_) >> 15;
 	}
 	else
 	{
+		// Reset the phase so vibrato always starts from the centre of its
+		// sweep rather than wherever it happened to stop. Coming in mid-swing
+		// puts the note briefly off-pitch the moment the depth opens up.
 		vibPhase_ = 0;
 		vibCents_ = 0;
 	}
