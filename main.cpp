@@ -14,13 +14,17 @@
 //   CV In 2      breath CV, adds to the knob
 //   Pulse In 1   tongue: re-articulates the current note
 //
-//   Main         breath: level, brightness (fine tune in TUNE)
+//   Main         breath          (FINE TUNE during calibration)
 //   X            character: breathy -> pure
-//   Y            scale                     (coarse tune in TUNE)
+//   Y            scale           (COARSE TUNE during calibration)
 //
-//   Switch UP    legato: glide + vibrato   UP held 1s  -> show the minGap bar
-//   Switch MID   tongued                   UP held 3s  -> tune
-//   Switch DOWN  mute / chiff stop         DOWN held 2s-> calibrate
+//   Switch UP    legato: glide + vibrato — and nothing else, ever
+//   Switch MID   tongued
+//   Switch DOWN  mute / chiff stop        DOWN held 2s -> calibrate
+//
+// Calibration drones a reference note the whole time it runs, and Y/Main tune
+// it while you teach the fingering — the two use different controls, so they
+// cost each other nothing.
 //
 //   Audio Out 1  the flute
 //   Audio Out 2  its breath noise alone
@@ -59,7 +63,7 @@ namespace {
 // UI state
 // ---------------------------------------------------------------------------
 
-enum class UiMode : uint8_t { Play, Learn, Tune };
+enum class UiMode : uint8_t { Play, Learn };
 
 enum class LearnPhase : uint8_t {
 	Waiting,    ///< holding a combo, awaiting the confirming tap
@@ -77,33 +81,44 @@ constexpr int32_t kDecidedTicks        = (kCtrlRate * 5) / 2;   ///< 2.5s
 constexpr int32_t kFailFlashTicks      = (3 * kCtrlRate) / 2;
 constexpr int32_t kAbortFlashTicks     = kCtrlRate;
 constexpr int32_t kScaleShowTicks      = (kCtrlRate * 6) / 5;
-constexpr int32_t kGapShowTicks        = (kCtrlRate * 5) / 2;
 
-/// Breath used for the tuning drone: enough to sound clearly, below the
-/// register boundary so the reference never jumps the octave under the
+/// The calibration drone: a steady reference note that sounds throughout, so
+/// the card can be tuned while its fingering is being taught.
+///
+/// Deliberately QUIET. It plays continuously for the length of a fifteen-tap
+/// calibration, so anything approaching performance level is wearing rather
+/// than helpful — this is a reference pitch, not the instrument. It also sits
+/// well below the register boundary, so the octave never jumps under the
 /// player's hands while they are trying to tune to it.
-constexpr int32_t kDroneBreath = 1400;
+constexpr int32_t kDroneBreath = 900;
+
+/// The drone's own timbre. Plain and clean: mostly tone with a little air so
+/// the pitch is easy to hear against an oscillator, a moderate filter so it is
+/// not shrill, and low drive so it stays a reference rather than a voice.
+constexpr int32_t kDroneAir   = 1400;
+constexpr int32_t kDroneCut   = 5200;
+constexpr int32_t kDroneDrive = 5000;
 
 // ---------------------------------------------------------------------------
 // Offset-from-current-position knob pickup, for the tuning controls.
 // ---------------------------------------------------------------------------
 //
-// Main and Y are breath and scale in Play, so they can be anywhere when TUNE is
-// entered. Taking their absolute position would jump the tuning; these track
-// the DELTA from wherever they sat on entry, and only once they have actually
-// been moved.
+// Main and Y are breath and scale in Play, so they can be anywhere when a
+// calibration starts. Taking their absolute position would jump the tuning;
+// these track the DELTA from wherever they sat on entry, and only once they
+// have actually been moved.
 //
 // Three things have to be right, and each of them is a bug NIBBLE shipped and
 // then fixed:
 //
-//   1. The reference is latched ONCE, on entry, and never re-taken while TUNE
-//      holds. Re-taking it on each threshold crossing lets ADC dither ratchet
-//      the tuning away with nobody touching the knob.
+//   1. The reference is latched ONCE, when calibration starts, and never
+//      re-taken. Re-taking it on each threshold crossing lets ADC dither
+//      ratchet the tuning away with nobody touching the knob.
 //   2. The comparison uses a SMOOTHED reading. A latched reference alone is not
 //      enough when the noise is comparable to the threshold — NIBBLE measured a
 //      stationary knob handing control back 17,000 times in 200k ticks.
 //   3. The knob must move past kKnobMoveThresh before it takes control at all,
-//      so entering TUNE cannot move the tuning by a single cent.
+//      so starting a calibration cannot move the tuning by a single cent.
 struct TuneKnob
 {
 	int32_t smooth_ = 0;
@@ -179,7 +194,6 @@ public:
 			{
 				// Swallow the release of whatever the switch is already doing.
 				downFired_ = (SwitchVal() == Switch::Down);
-				upStage_   = (SwitchVal() == Switch::Up) ? 2 : 0;
 				splash_    = kSplashSamples;
 			}
 			AudioOut1(0);
@@ -202,7 +216,9 @@ public:
 		else if (ctrlDiv_ == 8) UiTick();
 
 		// --- audio ---------------------------------------------------------
-		const int32_t air = (ui_ == UiMode::Tune) ? kDroneBreath
+		// During calibration the voice drones at a fixed breath so there is a
+		// steady reference to tune against; in play it follows the knob.
+		const int32_t air = (ui_ == UiMode::Learn) ? kDroneBreath
 		                                          : breath_.BreathQ12();
 		const int32_t v = voice_.Step(air);
 
@@ -232,7 +248,6 @@ private:
 		ReadSwitch();
 
 		if (ui_ == UiMode::Learn) { LearnTick(); return; }
-		if (ui_ == UiMode::Tune)  { TuneTick();  return; }
 
 		// --- Play ----------------------------------------------------------
 		int8_t idx = kComboNone;
@@ -302,8 +317,6 @@ private:
 
 		if (sw == Switch::Down)
 		{
-			upTicks_ = 0; upStage_ = 0;
-
 			if (downFired_) { downTicks_ = 0; return; }
 			if (downTicks_ == 0) tapped_ = true;
 			if (downTicks_ < kHoldCalTicks) downTicks_++;
@@ -321,28 +334,20 @@ private:
 		downTicks_ = 0;
 		downFired_ = false;
 
-		if (sw == Switch::Up)
-		{
-			upTicks_++;
-			// Staged: 1s shows the gap bar, 3s continues into TUNE. Each stage
-			// fires once per hold, or the first would re-trigger every tick on
-			// the way to the second.
-			if (upStage_ == 0 && upTicks_ >= kHoldGapTicks)
-			{
-				upStage_ = 1;
-				if (ui_ == UiMode::Play) { gapShow_ = kGapShowTicks; }
-			}
-			else if (upStage_ == 1 && upTicks_ >= kHoldTuneTicks)
-			{
-				upStage_ = 2;
-				if (ui_ == UiMode::Play) EnterTune();
-			}
-		}
-		else
-		{
-			upTicks_ = 0;
-			upStage_ = 0;
-		}
+		// SWITCH UP IS LEGATO AND NOTHING ELSE. No timer, no stages, no hidden
+		// gesture — holding it is how you play a slur, and a playing position
+		// cannot also be a hold gesture.
+		//
+		// v2.0 put the gap bar on a 1s up-hold and TUNE on a 3s one. Both fire
+		// while you are simply playing legato, so a slur lasting three seconds
+		// dropped the card into tune mode — LEDs cycling, drone running, and no
+		// way out, because tune exits on a TAP and a tap means switch DOWN,
+		// which is the mute you are not holding. Reported from hardware as
+		// "gliss mode seems to hang up".
+		//
+		// The general rule this cost us: never overload a switch position that
+		// is ALSO a continuous playing mode. Momentary positions can carry
+		// gestures; held ones cannot.
 	}
 
 	void NoteOn(int8_t combo)
@@ -388,7 +393,15 @@ private:
 	/// the chiff's extra noise went missing.
 	void __not_in_flash_func(ApplyTimbre)()
 	{
-		Timbre t = TimbreFor(breath_.BreathQ12(), KnobVal(Knob::X));
+		// EFFORT, not level.
+		//
+		// This is the whole point of the two curves. Level reaches nearly full
+		// by half the knob's travel, so a timbre driven by level would also
+		// stop changing there and the top half of the sweep would be dead.
+		// Effort keeps climbing to the stop, so past the point where it stops
+		// getting louder the note keeps getting brighter and richer — which is
+		// what "blowing harder" does on a real instrument.
+		Timbre t = TimbreFor(breath_.EffortQ12(), KnobVal(Knob::X));
 		// The chiff rides on top of the standing air amount.
 		t.air += breath_.ChiffNoiseQ15() >> 3;
 		if (t.air > 4096) t.air = 4096;
@@ -519,6 +532,9 @@ private:
 		learnTimer_  = kLearnTimeoutTicks;
 		phaseTimer_  = 0;
 		collisions_  = 0;
+		// Arm the tuning knobs so they pick up from where they already are
+		// rather than jumping the drone to their absolute positions.
+		EnterTune();
 		// Entering on a hold means the release of that hold is still to come.
 		// downFired_ is already true here, which swallows it — without that the
 		// release would immediately read as the capture tap for step 0.
@@ -545,6 +561,9 @@ private:
 		// Keep the detector running: its settle state is what validates a tap.
 		int8_t dummy = kComboNone;
 		(void)levels_.Step(CVIn1(), dummy);
+
+		// Tuning runs concurrently — different knobs, no conflict.
+		TuneOverlay();
 
 		if (phaseTimer_ > 0)
 		{
@@ -616,37 +635,39 @@ private:
 	}
 
 	// -----------------------------------------------------------------------
-	// Tuning
+	// Tuning — live DURING calibration, not a mode of its own
 	// -----------------------------------------------------------------------
+	//
+	// Calibration and tuning use disjoint controls, which is what makes this
+	// work: calibration reads CV In 1 and the switch tap, tuning reads Y and
+	// Main. Nothing is shared, so they can run at the same time and the player
+	// tunes the drone while walking the fifteen combinations.
+	//
+	// v2.0 had TUNE as a separate mode on a 3-second switch-up hold. That
+	// collided with legato — see ReadSwitch() — and the fix of moving it to
+	// "after calibration" was still a phase you had to sit through. Running it
+	// concurrently costs nothing and removes a mode.
 
 	void EnterTune()
 	{
-		ui_ = UiMode::Tune;
 		coarseKnob_.Enter(KnobVal(Knob::Y), coarse_);
 		fineKnob_.Enter(KnobVal(Knob::Main), fine_);
 		pitchDirty_ = true;
 	}
 
-	void __not_in_flash_func(TuneTick)()
+	/// Track the tuning knobs and hold the drone at the scale root.
+	/// Called from LearnTick() every control tick.
+	void __not_in_flash_func(TuneOverlay)()
 	{
-		// Keep the detector running even though the fingering is ignored here.
-		// Its smoothing and settle plateau are continuous state: leave them
-		// unfed for the length of a tuning session and the first note back in
-		// Play is matched against a plateau from before it started, which
-		// swallows that note or fires it late. LearnTick does the same, for the
-		// same reason.
-		int8_t dummy = kComboNone;
-		(void)levels_.Step(CVIn1(), dummy);
-
 		coarse_ = coarseKnob_.Update(KnobVal(Knob::Y), kCoarseDen,
 		                             kCoarseLo, kCoarseHi);
 		fine_   = fineKnob_.Update(KnobVal(Knob::Main), kFineDen,
 		                           kFineLo, kFineHi);
 
 		// Drone the scale root, fingering ignored, so there is a stable
-		// reference to tune against.
+		// reference to tune against while the combos are being captured.
 		//
-		// Coarse applies in BOTH directions here, exactly as in UpdatePitch():
+		// Coarse applies in BOTH directions, exactly as in UpdatePitch():
 		// clamping the negative half away would make the drone ignore flat
 		// tuning while CV Out 1 still followed it, so the two would disagree
 		// precisely while being used to tune something.
@@ -660,25 +681,26 @@ private:
 		if (fine_) inc = ApplyFineCents(inc, fine_);
 		voice_.SetIncQ32(inc);
 
-		// Keep the glide anchored here, so leaving TUNE does not slide from
-		// wherever the drone happened to be.
+		// The drone sets its OWN timbre, and must.
+		//
+		// ApplyTimbre() derives everything from the breath knob, but during
+		// calibration that knob is the FINE TUNE — so leaving the timbre to it
+		// would make the reference note change character every time you nudged
+		// the tuning, and start from whatever was last set in play.
+		//
+		// Deliberately plain and quiet: mostly tone with a little air so the
+		// pitch is easy to hear against an oscillator, a moderate filter so it
+		// is not shrill over fifteen taps, and low drive so it stays a clean
+		// reference rather than a rich one.
+		voice_.SetTimbre(kDroneAir, kDroneCut, kResMin, kDroneDrive);
+
+		// Keep the glide anchored, so the first note after calibration does not
+		// slide from wherever the drone happened to be.
 		glideSemiQ8_ = targetSemiQ8_ = (semi << 8);
 		cvSemi_  = semi;
 		cvCents_ = fine_;
 
 		UpdateCVs();
-
-		// A tap leaves, keeping whatever offsets are set.
-		if (tapped_)
-		{
-			// Same reasoning as FinishLearn(): current_ still names whatever
-			// the CV happened to be sitting on, and if the first real press
-			// matches it the change is silently swallowed as "no change".
-			levels_.ResetHeld();
-			ui_ = UiMode::Play;
-			combo_ = kComboNone;
-			pitchDirty_ = true;
-		}
 	}
 
 	// -----------------------------------------------------------------------
@@ -692,7 +714,6 @@ private:
 		switch (ui_)
 		{
 		case UiMode::Learn: LearnLeds(); return;
-		case UiMode::Tune:  TuneLeds();  return;
 		case UiMode::Play:  PlayLeds();  return;
 		}
 	}
@@ -805,33 +826,21 @@ private:
 		return false;
 	}
 
-	void TuneLeds()
-	{
-		// A single LED going round the block, ~2Hz. Deliberately unlike any
-		// fingering, so TUNE cannot be mistaken for Play at a glance.
-		static const uint8_t kRing[4] = {0, 1, 3, 2};
-		const int step = (uiTicks_ >> 9) & 3;
-		for (int i = 0; i < 4; i++) LedOff(i);
-		LedBrightness(kRing[step], kLedFull);
-
-		// Offset magnitude, and OFF at exactly zero so "no offset" is visible.
-		const int32_t c = coarse_ < 0 ? -coarse_ : coarse_;
-		const int32_t f = fine_   < 0 ? -fine_   : fine_;
-		LedBrightness(4, c ? static_cast<uint16_t>(kLedGlow + (c * 300)) : 0);
-		LedBrightness(5, f ? static_cast<uint16_t>(kLedGlow + (f * 38))  : 0);
-	}
+	// There is no TuneLeds() any more.
+	//
+	// Tuning runs concurrently with calibration now, and the LEDs are already
+	// fully committed: 0-3 show which combination to hold, 4/5 show the
+	// popcount phase. Overlaying the tuning offsets on top would make both
+	// unreadable.
+	//
+	// The offsets are audible instead, which is the right channel for them —
+	// you are tuning by ear against a drone, not by watching a light. The one
+	// thing lost is the "offset is exactly zero" indicator; if that turns out
+	// to matter, the honest place for it is a brief flash on entering
+	// calibration rather than a permanent light.
 
 	void PlayLeds()
 	{
-		if (gapShow_ > 0)
-		{
-			gapShow_--;
-			GapBar();
-			LedOff(4);
-			LedOff(5);
-			return;
-		}
-
 		if (scaleShow_ > 0)
 		{
 			scaleShow_--;
@@ -878,8 +887,6 @@ private:
 	bool    stopLast_  = false;
 	int32_t downTicks_ = 0;
 	bool    downFired_ = false;
-	int32_t upTicks_   = 0;
-	int     upStage_   = 0;
 
 	int8_t   combo_      = kComboNone;
 	int      scale_      = 0;
@@ -897,7 +904,6 @@ private:
 	int32_t cvPitchLast_ = -99999;
 	int32_t cvEnvLast_   = -99999;
 	int32_t scaleShow_   = 0;
-	int32_t gapShow_     = 0;
 	int32_t pulseTimer_  = 0;
 };
 

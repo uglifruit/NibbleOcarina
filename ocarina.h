@@ -261,10 +261,14 @@ constexpr int kMaxRoot = 12;
 // Gestures
 // ---------------------------------------------------------------------------
 
-/// Hold thresholds, in control ticks.
-constexpr int32_t kHoldCalTicks  = 2 * kCtrlRate;        ///< DOWN 2s -> calibrate
-constexpr int32_t kHoldGapTicks  = 1 * kCtrlRate;        ///< UP   1s -> minGap bar
-constexpr int32_t kHoldTuneTicks = 3 * kCtrlRate;        ///< UP   3s -> tune
+/// Hold threshold, in control ticks. There is only one hold gesture on the
+/// card: DOWN for two seconds calibrates.
+///
+/// Switch UP deliberately carries NO gesture. It is legato, a position you hold
+/// while playing, and v2.0 also hung a staged 1s/3s hold on it — so a slur
+/// lasting three seconds dropped the card into tune mode with no way back.
+/// A held playing position cannot also be a gesture.
+constexpr int32_t kHoldCalTicks  = 2 * kCtrlRate;
 
 /// How far a knob must move before it takes control, of 4095.
 ///

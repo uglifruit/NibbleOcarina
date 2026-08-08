@@ -3,7 +3,7 @@ Name: NIBBLE OCARINA
 short-description: Turns the Workshop System's four buttons into the finger holes of a flute you blow with a knob
 Language: C++ (ComputerCard)
 Creator: Andy Jenkinson (uglifruit)
-Version: "2.0.0"
+Version: "2.1.0"
 Status: Released
 License: CC-BY-4.0
 repository: https://github.com/uglifruit/NibbleOcarina
@@ -17,7 +17,7 @@ contact:
 
 uf2:
   - path: UF2/ocarina.uf2
-    name: NIBBLE OCARINA 2.0.0
+    name: NIBBLE OCARINA 2.1.0
 
 tags:
   - flute
@@ -76,11 +76,14 @@ summary: |
   holding the switch down for two seconds re-enters calibration from anywhere,
   and holding it up for one second shows the bar again at any time.<br><br>
 
-  TUNING - hold the switch up for three seconds and the card drones the root of
-  the current scale on both the audio and the pitch CV. Y is coarse in
-  semitones, Main is fine in cents, and both pick up from wherever the knobs
-  already are, so entering tune never jumps the pitch. Nothing is saved to flash
-  - not the tuning and not the calibration.<br><br>
+  TUNING HAPPENS DURING CALIBRATION - a quiet reference note drones for the
+  whole of it, and Y and Main tune that note while you teach the fingering. The
+  two jobs use different controls, so neither costs the other anything and
+  there is no separate mode to enter or leave. Y is coarse in semitones, Main
+  is fine in cents, and both pick up from wherever the knobs already are so
+  starting a calibration never jumps the pitch. Nothing is saved to flash - not
+  the tuning and not the calibration, and a power cycle means calibrating again
+  anyway, which is when you retune.<br><br>
 
   ON HONESTY - v1 of this card was a jet-driven waveguide, a genuine physical
   model. It had a bug: the jet's feedback term did not depend on breath, so the
@@ -155,7 +158,7 @@ controls:
     -
       main:
         name: Breath
-        description: "How hard you are blowing, and the card's only way to be silent - below about seven percent of travel the instrument does not sound at all. It is a real dynamics control, not a volume fader: blowing harder makes the tone louder AND brighter AND richer together, spanning nearly a hundred to one in level. The response is squared rather than linear, which spreads the interesting region out instead of cramming it into the first third of the sweep. The octave jump sits around seventy percent, with a hysteresis band so it cannot flutter. In TUNING this becomes fine tune, plus or minus one hundred cents."
+        description: "How hard you are blowing, and the card's only way to be silent - below about seven percent of travel the instrument does not sound at all. It does two things in sequence: level rises FAST and is nearly full by half the travel, the way ears actually hear loudness, and past that point the knob stops adding volume and starts adding brightness and harmonic richness instead. So the bottom half is how loud and the top half is how hard, which is what leaning into a real instrument feels like. The octave jump sits around seventy percent, with a hysteresis band so it cannot flutter. DURING CALIBRATION this becomes fine tune, plus or minus one hundred cents."
       x:
         name: Timbre
         description: How airy the tone is, and it works WITH the breath knob rather than beside it. Fully anticlockwise is soft and very breathy - airy, wooden, half air by energy. Fully clockwise is pure and focused with the noise almost gone. Because breath also thins the air out as you lean in, soft playing at the anticlockwise end is nearly all breath while hard playing at the clockwise end is a strong clear tone. The useful range is narrower than it looks and the knob is scaled to sit inside it - a linear sweep of the underlying parameter would waste three quarters of the travel on no audible change.
@@ -167,8 +170,8 @@ controls:
       display: list
       items:
         - id: LED0-3
-          description: "In play, the fingering you are holding - the 2x2 block is laid out like the Four Voltages buttons, so the panel mirrors your fingers. During calibration, the combination to hold next, blinking, with already-visited buttons glowing dimly. After a fall back to ten, a four-LED bar showing how close the patch came to fifteen. In tuning, a single LED circling the block so the mode is unmistakable."
+          description: "In play, the fingering you are holding - the 2x2 block is laid out like the Four Voltages buttons, so the panel mirrors your fingers. During calibration, the combination to hold next, blinking, with already-visited buttons glowing dimly. After a fall back to ten, a four-LED bar showing how close the patch came to fifteen."
         - id: LED4
-          description: "In play, a breath meter. During calibration, part of the phase marker - lit for singles, lit with LED 5 for triples, blinking fast with it for all four, so more light means more fingers. In tuning, how far the coarse offset is from zero, and dark when there is no offset at all."
+          description: "In play, a breath meter. During calibration, part of the phase marker - lit for singles, lit with LED 5 for triples, blinking fast with it for all four, so more light means more fingers."
         - id: LED5
-          description: "In play, the mode indicator - dimly lit means all fifteen combinations are live, dark means ten. This is the one thing worth knowing mid-performance, because it tells you whether a third finger does anything. During calibration it marks pairs, and in tuning it shows the fine offset."
+          description: "In play, the mode indicator - dimly lit means all fifteen combinations are live, dark means ten. This is the one thing worth knowing mid-performance, because it tells you whether a third finger does anything. During calibration it marks pairs."

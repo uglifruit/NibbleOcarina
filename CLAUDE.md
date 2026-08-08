@@ -122,6 +122,25 @@ Nothing feeds back into the nonlinearity, so it can only colour a pitch that is
 already exact. **If you are tempted to reintroduce a feedback path for
 authenticity, read the devlog first.**
 
+**The breath knob produces TWO curves, and they are not interchangeable.**
+`BreathQ12()` is LEVEL — log-shaped, nearly full by half the travel, and it
+drives the VCA. `EffortQ12()` is linear to the stop and drives brightness,
+harmonic drive and the register threshold. Using level where effort belongs
+makes the top half of the knob dead, because level has already flattened there.
+Using effort where level belongs makes the knob feel unresponsive, which is
+exactly what hardware reported of v2.0's squared curve.
+
+**Switch UP carries no gesture, and must not.** It is legato — a position held
+while playing. v2.0 hung a staged 1s/3s hold on it, so a three-second slur
+dropped the card into tune mode with no way out (tune exited on a tap, and a tap
+is switch DOWN). Momentary positions can carry gestures; held ones cannot.
+
+**Tuning runs concurrently with calibration**, because the two use disjoint
+controls: calibration reads CV In 1 and the switch, tuning reads Y and Main. The
+drone sets its own timbre explicitly — `ApplyTimbre()` derives from the breath
+knob, which during calibration is the fine tune, so leaving it to that would
+make the reference note change character as you tuned it.
+
 **Breath and X both feed all four voice parameters.** That is deliberate and it
 is what makes them interact: breath sets loudness AND brightness AND harmonic
 richness, X sets how airy the whole range is. Two knobs in separate lanes felt

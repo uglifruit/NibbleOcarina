@@ -33,21 +33,20 @@ namespace nib {
 /// can find without looking, narrow enough not to waste useful travel.
 constexpr int32_t kBreathThresh = 300;
 
-/// Where the octave jump happens, as a CURVED breath value (0..4095).
+/// Where the octave jump happens, as an EFFORT value (0..4095).
 ///
-/// These are post-curve numbers, which is why they look low: the curve is
-/// squared, so 1871 of 4095 is 70% of the KNOB's travel, not 46%. Setting them
-/// by eye against the knob rather than against the curve puts the jump at 88%
-/// of travel — technically working, but crammed into the last centimetre where
-/// it cannot be played deliberately.
+/// Effort, not level: level is log-shaped and has flattened long before the top
+/// of the knob, so a threshold on it would sit where a large physical movement
+/// barely changes the number. Effort stays linear, so 2870 of 4095 really is
+/// 70% of the travel.
 ///
 /// The band between the two is hysteresis. Once the register has flipped up it
 /// takes a drop back below kRegisterDown to return. Without a band, breath
 /// noise at the boundary flips the octave several times a second, which is the
 /// single most unmusical thing this card could do — tools/breathsim.py dithers
 /// the knob across the threshold and asserts it stays put.
-constexpr int32_t kRegisterUp   = 1871;   // ~70% of knob travel
-constexpr int32_t kRegisterDown = 1585;   // ~65%, one full curve-step below
+constexpr int32_t kRegisterUp   = 2870;   // ~70% of knob travel
+constexpr int32_t kRegisterDown = 2460;   // ~60%, a comfortable band below
 
 // ---------------------------------------------------------------------------
 // Articulation
@@ -110,8 +109,23 @@ public:
 	/// Control rate, after SetKnob(). Advances chiff and vibrato.
 	void Tick();
 
-	/// The air, 0..4095. Zero means silent.
+	/// LEVEL: what the VCA uses, 0..4095. Zero means silent.
+	///
+	/// Deliberately NOT the same as Effort(). The knob is log-shaped for level,
+	/// so the instrument is at nearly full volume by about half its travel —
+	/// which is how ears hear loudness and how a wind instrument actually
+	/// behaves. A linear or squared level curve spends most of the sweep still
+	/// getting louder, which reads as an unresponsive knob.
 	int32_t BreathQ12() const { return breath_; }
+
+	/// EFFORT: how hard you are blowing, 0..4095, LINEAR to the top.
+	///
+	/// This is what brightness and harmonic drive follow. Once level has
+	/// flattened out, effort keeps climbing, so the upper half of the knob
+	/// stops being louder and starts being richer — the note leans in rather
+	/// than just getting bigger. Without a separate curve the top third of the
+	/// travel would do nothing audible at all.
+	int32_t EffortQ12() const { return effort_; }
 
 	/// True while the air is above the sounding threshold — drives the gate.
 	bool Sounding() const { return breath_ > 0; }
@@ -129,7 +143,8 @@ public:
 	int32_t VibratoCents() const { return vibCents_; }
 
 private:
-	int32_t curved_     = 0;   ///< breath after the curve, before chiff/stop
+	int32_t curved_     = 0;   ///< LEVEL after the curve, before chiff/stop
+	int32_t effort_     = 0;   ///< how hard you are blowing, linear
 	int32_t breath_     = 0;   ///< what the bore actually gets
 	int32_t chiffNoise_ = 0;
 	int32_t chiffTicks_ = 0;

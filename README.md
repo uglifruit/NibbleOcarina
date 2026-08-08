@@ -43,10 +43,10 @@ knob** — hold the switch down for two seconds.
 | **CV In 1** | Four Voltages output — the fingering |
 | **CV In 2** | breath CV, adds to the knob |
 | **Pulse In 1** | tongue: re-articulates without changing the note |
-| **Main** | breath: loudness, brightness and richness together *(fine tune in TUNE)* |
+| **Main** | breath: loudness, then brightness and richness *(fine tune while calibrating)* |
 | **X** | character: breathy and soft → pure and focused |
-| **Y** | scale *(coarse tune in TUNE)* |
-| **Switch ↑** | legato: glide between notes, plus vibrato |
+| **Y** | scale *(coarse tune while calibrating)* |
+| **Switch ↑** | legato: glide between notes, plus vibrato — and nothing else |
 | **Switch —** | tongued: a chiff on every note |
 | **Switch ↓** | mute / chiff stop *(momentary)* |
 | **Audio Out 1** | the flute |
@@ -61,8 +61,10 @@ knob** — hold the switch down for two seconds.
 | Gesture | Does |
 |---|---|
 | **Switch ↓ 2s** | calibrate — works from anywhere, including mid-flash |
-| **Switch ↑ 1s** | show how close the last calibration came to 15-mode |
-| **Switch ↑ 3s** | tune (keep holding past the first stage) |
+
+That is the only hold gesture on the card. **Switch up carries none**: it is a
+position you hold while playing, and a held playing position cannot also be a
+timer without firing mid-phrase.
 
 ---
 
@@ -82,8 +84,11 @@ alternation. Up to about 16 waggles a second is clean.
 chiff, and a fast trill becomes a stutter. Legato glides between the two pitches
 instead, which is what a trill sounds like on a wind instrument.
 
-**The Main knob is the expression.** Barely blowing gives a quiet, dark, mostly
-breathy sound; leaning in makes it louder, brighter and more tonal together.
+**The Main knob is the expression, and it does two things in sequence.** It
+reaches nearly full volume by about half its travel — fast, like ears hear
+loudness — and past that point it stops getting louder and starts getting
+brighter and richer instead. So the bottom half is "how loud" and the top half
+is "how hard", which is what blowing into a real instrument feels like.
 **X** sets where that whole range sits — fully anticlockwise is airy and soft,
 fully clockwise is pure and focused. The two multiply, so soft playing at CCW is
 nearly all breath while hard playing at CW is a strong clear tone.
@@ -142,19 +147,21 @@ nothing patched into CV In 1. The previous calibration is kept.
 
 ## Tuning
 
-Hold **switch up for three seconds**. The card drones the root of the current
-scale on both Audio Out 1 and CV Out 1.
+**Tuning happens during calibration.** A quiet reference note drones for the
+whole of it, and you tune that note while you teach the fingering:
 
 - **Y** — coarse, ±12 semitones
 - **Main** — fine, ±100 cents
 
-Both start from wherever the knobs already are, so entering tune does not jump
-the tuning; a knob takes control only once you actually move it. A single LED
-circles the block so tune mode is unmistakable, and the bottom LEDs show how far
-each offset is from zero — dark means no offset.
+The two jobs use different controls — calibration reads CV In 1 and the switch,
+tuning reads Y and Main — so neither costs the other anything and there is no
+separate mode to enter or leave.
 
-Tap the switch to leave. **Tuning is not saved**, deliberately: nothing on this
-card is written to flash.
+Both knobs pick up from wherever they already are, so starting a calibration
+never jumps the tuning; a knob takes control only once you actually move it.
+
+**Tuning is not saved**, deliberately: nothing on this card is written to flash.
+A power cycle means calibrating again anyway, and that is when you retune.
 
 ---
 

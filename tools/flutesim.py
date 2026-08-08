@@ -42,7 +42,8 @@ SR = 48000
 NOISE_LP_Q15 = 9000
 CUT_MIN, CUT_MAX = 2600, 13000
 RES_MIN, RES_MAX = 9000, 13000
-AIR_MAX, AIR_MIN = 3700, 2200
+AIR_MAX, AIR_MIN = 3450, 1800
+AIR_GAIN = 2048
 AIR_BREATH_TILT = 700
 DRIVE_MIN, DRIVE_SPAN = 4000, 20000
 DC_POLE_Q15 = 32735
@@ -166,9 +167,10 @@ class Flute:
         white = ((self.rng >> 17) - 16384) >> 2
         self.n1 += ((white - self.n1) * NOISE_LP_Q15) >> 15
         self.n2 += ((self.n1 - self.n2) * NOISE_LP_Q15) >> 15
-        self.last_noise = (self.n2 * breath) >> 12
+        air = (self.n2 * AIR_GAIN) >> 12
+        self.last_noise = (air * breath) >> 12
 
-        src = (tone * (4096 - self.air) + self.n2 * self.air) >> 12
+        src = (tone * (4096 - self.air) + air * self.air) >> 12
 
         self.b1 += (((src - self.b1) + (((self.b1 - self.b2) * self.res) >> 15))
                     * self.cut) >> 15
@@ -299,8 +301,11 @@ def test_x_is_a_character_axis():
            for x in (0, 1365, 2730, 4095)]
     for x, t in pts:
         print(f"        X {x:4d} -> tonal {t:5.3f}")
-    check_true("fully CCW is genuinely airy", pts[0][1] < 0.75,
-               f"tonal {pts[0][1]:.3f}")
+    # Reported from hardware: "breath is basically too loud all the time, next
+    # to note". The air must be a texture UNDER the pitch, not level with it —
+    # so the CCW end is breathy but still clearly pitched.
+    check_true("fully CCW is airy but the note still leads",
+               0.70 < pts[0][1] < 0.95, f"tonal {pts[0][1]:.3f}")
     check_true("fully CW is nearly pure", pts[-1][1] > 0.92,
                f"tonal {pts[-1][1]:.3f}")
     check_true("and the sweep is monotonic",

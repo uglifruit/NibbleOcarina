@@ -102,8 +102,24 @@ constexpr int32_t kResMax = 13000;
 /// the noise is inaudible under the tone, and above 3800 the pitch disappears
 /// altogether. A linear 0..4095 sweep wastes three quarters of the knob on no
 /// audible change, which is exactly what the first attempt did.
-constexpr int32_t kAirMax = 3700;   ///< X fully CCW: very breathy
-constexpr int32_t kAirMin = 2200;   ///< X fully CW: nearly pure
+///
+/// Pulled DOWN from 3700/2200 after hardware: the breath was sitting level with
+/// the note rather than under it. The pitch has to lead — this is a flute with
+/// air in it, not air with a pitch in it.
+/// Re-measured after kAirGainQ12 halved the noise: attenuating the air moved
+/// the audible mix range UP, because a quieter noise source needs a larger
+/// share of the mix to be heard at all. 3450 reads as clearly breathy with the
+/// pitch still leading; 1800 is nearly pure.
+constexpr int32_t kAirMax = 3450;   ///< X fully CCW: breathy
+constexpr int32_t kAirMin = 1800;   ///< X fully CW: nearly pure
+
+/// Extra attenuation applied to the noise before it is mixed, Q12.
+///
+/// The air/tone mix alone could not fix the balance: pushing kAirMax down far
+/// enough to sit the noise under the note also flattened the X knob, because
+/// the audible range of the mix is narrow. Scaling the noise ITSELF keeps the
+/// full sweep of character while halving how loud the air is at every point.
+constexpr int32_t kAirGainQ12 = 2048;   ///< half
 
 /// How much harder blowing thins the air out. Soft playing is mostly breath on
 /// a real instrument; leaning in makes the tone speak.

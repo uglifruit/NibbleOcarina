@@ -5,6 +5,83 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v2.1.0 — second hardware session
+
+Three reports, one of them a hard bug.
+
+### "Gliss mode seems to hang up"
+
+LEDs cycling 0→1→3→2 with the noise continuing is the TUNE animation, and the
+cause was a design error rather than a coding one:
+
+**Switch UP was both legato and a staged hold gesture** — 1s showed the gap bar,
+3s entered tune. So any slur lasting three seconds dropped the card into tune
+mode. Worse, tune exited on a *tap*, and a tap means switch DOWN, which is the
+mute. Holding up to play legato therefore led somewhere with no obvious way
+back.
+
+The rule this cost, and it is general: **never hang a hold gesture on a switch
+position that is also a continuous playing mode.** Momentary positions can carry
+gestures; held ones cannot. Switch up now does exactly one thing.
+
+### Tuning moved INTO calibration
+
+The first fix was to put tune after a successful calibration. Better, but still
+a phase to sit through — and the observation that settled it came from the user:
+**calibration and tuning use disjoint controls.** Calibration reads CV In 1 and
+the switch tap; tuning reads Y and Main. Nothing is shared.
+
+So they now run concurrently. A quiet reference note drones for the whole
+calibration and Y/Main tune it while the fifteen combinations are taught. That
+removes a mode, removes a gesture, and removes the phase — three things gone for
+no cost.
+
+The drone sets its **own** timbre, and has to: `ApplyTimbre()` derives everything
+from the breath knob, which during calibration is the fine tune. Left to it, the
+reference note would change character every time the tuning was nudged.
+
+### "Breath is basically too loud all the time, next to note"
+
+The air was mixed level with the tone rather than under it. Fixed by attenuating
+the noise itself (`kAirGainQ12 = half`) rather than by changing the mix ratio —
+pushing the ratio far enough to fix the balance also flattened the X knob,
+because the audible range of the mix is narrow.
+
+That in turn moved the useful mix range UP (a quieter source needs a larger
+share to be heard at all), so `kAirMax/kAirMin` were re-measured: 3450/1800
+rather than 3700/2200. X now sweeps 0.90 → 0.995 tonal, still clearly breathy at
+the CCW end with the pitch always leading.
+
+### "Linear rather than the log it needs to be"
+
+v2.0 SQUARED the level curve, which is the *opposite* of what was wanted: it
+spends the whole sweep still getting louder and only arrives at the very end.
+That is what read as an unresponsive knob.
+
+The fix is **two curves from one knob**:
+
+| | shape | drives |
+|---|---|---|
+| **level** | `1-(1-n)³` — fast, then flat | the VCA |
+| **effort** | linear to the stop | brightness, drive, register |
+
+Level is at 3453/4096 by half the travel and only gains 643 more over the entire
+top half. Effort keeps climbing (+2210 over that same half), so once the note
+stops getting louder it keeps getting brighter and richer — which is what the
+request for "a quick up-to-volume then continuing should add overtones" actually
+describes.
+
+The register threshold moved onto effort for the same reason: on the level curve
+it would sit in a region where a large physical movement barely changes the
+number.
+
+One off-by-one caught on the way: the cubic returns exactly 4096 at full travel,
+one past the documented 0..4095. Harmless in today's arithmetic — but the
+squared curve it replaced had the identical off-by-one and *that* one clipped
+the DAC. Clamped rather than reasoned about again later.
+
+---
+
 ## v2.0.0 — the voice was rebuilt, because v1's was broken
 
 First hardware session. Two symptoms, reported by ear:

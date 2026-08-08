@@ -95,10 +95,15 @@ int32_t __not_in_flash_func(Flute::Step)(int32_t breathQ12)
 	const int32_t white = rand_bipolar(rng_) >> 2;
 	n1_ += ((white - n1_) * kNoiseLpQ15) >> 15;
 	n2_ += ((n1_   - n2_) * kNoiseLpQ15) >> 15;
-	lastNoise_ = (n2_ * breathQ12) >> 12;
+
+	// Scaled so the air sits UNDER the note rather than beside it. See
+	// kAirGainQ12 — the mix ratio alone could not do this without flattening
+	// the X knob.
+	const int32_t air = (n2_ * kAirGainQ12) >> 12;
+	lastNoise_ = (air * breathQ12) >> 12;
 
 	// 4. Mix tone and air.
-	const int32_t src = (tone * (4096 - airQ12_) + n2_ * airQ12_) >> 12;
+	const int32_t src = (tone * (4096 - airQ12_) + air * airQ12_) >> 12;
 
 	// 5. The bore: a 2-pole resonant lowpass, standing in for the body the
 	//    delay line used to provide.

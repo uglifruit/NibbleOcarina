@@ -10,7 +10,7 @@ namespace nib {
 
 void Breath::Init()
 {
-	curved_ = breath_ = 0;
+	curved_ = breath_ = effort_ = 0;
 	chiffNoise_ = chiffTicks_ = 0;
 	sinceChiff_ = kChiffMinGapTicks;
 	chiffFired_ = false;
@@ -32,26 +32,39 @@ void Breath::SetKnob(int32_t knob, int32_t cvAdd)
 		// SILENT. This is the card's only way to stop, because the fingering
 		// cannot express "no holes covered" — see ocarina.h.
 		curved_ = 0;
+		effort_ = 0;
 	}
 	else
 	{
-		// Square the normalised value above threshold.
-		//
-		// A linear map wastes the interesting region: onset and the edge of
-		// the register boundary both land in the first third of the travel,
-		// leaving the top half doing almost nothing. Squaring spreads them out
-		// and puts the octave jump around 70% of the knob rather than 40%.
+		// ONE knob, TWO curves, and they diverge on purpose.
 		//
 		// The divisor is a compile-time constant, so gcc strength-reduces this
 		// into a multiply — it is not a runtime division.
 		//
 		// The clamp on `n` is not belt-and-braces: at v == 4095 the division
-		// yields exactly 4096, one PAST full scale in Q12, and squaring that
-		// gives 4096 rather than 4095. One count over the 12-bit range is
-		// enough to clip the DAC on the loudest note the card can play.
+		// yields exactly 4096, one PAST full scale in Q12, which is enough to
+		// clip the DAC on the loudest note the card can play.
 		int32_t n = ((v - kBreathThresh) << 12) / (4095 - kBreathThresh);
 		if (n > 4095) n = 4095;
-		curved_ = (n * n) >> 12;
+
+		// EFFORT is linear — it is simply how far the knob has been turned.
+		effort_ = n;
+
+		// LEVEL is log-shaped: 1 - (1-n)^3, which rises fast and flattens.
+		// Nearly full by half the travel, because that is how ears hear
+		// loudness and how a wind instrument actually speaks.
+		//
+		// v2.0 SQUARED this instead, which is the opposite curve — it spends
+		// the whole sweep still getting louder and only reaches full at the
+		// very end. On hardware that reads as an unresponsive knob, which is
+		// exactly what was reported.
+		const int32_t inv = 4096 - n;
+		curved_ = 4096 - (((inv * inv) >> 12) * inv >> 12);
+		// The cubic reaches exactly 4096 at full travel, one past the 0..4095
+		// this is documented to return. Harmless in today's arithmetic, but the
+		// squared curve it replaced had the identical off-by-one and that one
+		// did clip the DAC. Clamp rather than re-derive the reasoning later.
+		if (curved_ > 4095) curved_ = 4095;
 	}
 
 	// The register switch, with hysteresis.
@@ -60,13 +73,16 @@ void Breath::SetKnob(int32_t knob, int32_t cvAdd)
 	// is decided here. The band between the two thresholds is what stops
 	// breath noise at the boundary from flipping the octave several times a
 	// second — which would be the most unmusical thing this card could do.
+	// Against EFFORT, not level: level has flattened long before the top of
+	// the knob, so a threshold on it would sit in a region where a large
+	// physical movement barely changes the number.
 	if (register_ == 0)
 	{
-		if (curved_ >= kRegisterUp) register_ = 1;
+		if (effort_ >= kRegisterUp) register_ = 1;
 	}
 	else
 	{
-		if (curved_ <= kRegisterDown) register_ = 0;
+		if (effort_ <= kRegisterDown) register_ = 0;
 	}
 }
 
@@ -135,10 +151,10 @@ void Breath::Tick()
 	// What the bore actually gets.
 	if (stopped_)
 	{
-		// The chiff stop. Not merely a gate close: Waveguide::Mute() also drops
-		// the loop gain so the bore damps out over ~50ms instead of ringing on.
-		// That is what makes it a STOP, and what makes the release re-attack
-		// cleanly rather than continuing whatever was still sounding.
+		// The chiff stop. Not merely a gate close: Flute::Mute() also slams the
+		// bore filter shut, so the tail dies in a few milliseconds rather than
+		// decaying. That is what makes it a STOP, and what makes the release
+		// re-attack cleanly rather than continuing whatever was still sounding.
 		breath_ = 0;
 	}
 	else

@@ -20,8 +20,8 @@ import sys
 CTRL_RATE = 3000
 
 BREATH_THRESH = 300
-REGISTER_UP   = 1871
-REGISTER_DOWN = 1585
+REGISTER_UP   = 2870
+REGISTER_DOWN = 2460
 
 CHIFF_TICKS       = CTRL_RATE // 80          # ~12ms
 CHIFF_NOISE_Q15   = 14000
@@ -59,6 +59,7 @@ def fast_sin(phase):
 class Breath:
     def __init__(self):
         self.curved = 0
+        self.effort = 0
         self.breath = 0
         self.chiff_noise = 0
         self.chiff_ticks = 0
@@ -74,17 +75,21 @@ class Breath:
         v = max(0, min(4095, knob + cv_add))
         if v < BREATH_THRESH:
             self.curved = 0
+            self.effort = 0
         else:
             # The clamp matters: at v == 4095 this yields exactly 4096, one
             # past full scale in Q12. See breath.cpp.
             n = min(4095, ((v - BREATH_THRESH) << 12) // (4095 - BREATH_THRESH))
-            self.curved = (n * n) >> 12
+            self.effort = n
+            inv = 4096 - n
+            self.curved = min(4095, 4096 - (((inv * inv) >> 12) * inv >> 12))
 
+        # Against EFFORT: level has flattened long before the top of the knob.
         if self.register == 0:
-            if self.curved >= REGISTER_UP:
+            if self.effort >= REGISTER_UP:
                 self.register = 1
         else:
-            if self.curved <= REGISTER_DOWN:
+            if self.effort <= REGISTER_DOWN:
                 self.register = 0
 
     def note_on(self):
@@ -148,9 +153,7 @@ def test_silence():
     check_true("just above threshold sounds", b.breath >= 0)
     b.set_knob(4095)
     b.tick()
-    # 4094 rather than 4095: squaring in Q12 loses the last count
-    # (4095*4095 >> 12 == 4094). Correct fixed-point behaviour, not a bug.
-    check("full knob is full breath", b.breath, 4094)
+    check("full knob is full breath", b.breath, 4095)
 
 
 def test_stop():
@@ -158,13 +161,13 @@ def test_stop():
     b = Breath()
     b.set_knob(4095)
     b.tick()
-    check("sounding before the stop", b.breath, 4094)
+    check("sounding before the stop", b.breath, 4095)
     b.stopped = True
     b.tick()
     check("stop silences immediately", b.breath, 0)
     b.stopped = False
     b.tick()
-    check("release restores the air", b.breath, 4094)
+    check("release restores the air", b.breath, 4095)
 
 
 def test_register_hysteresis():
@@ -188,7 +191,7 @@ def test_register_hysteresis():
     for k in range(4096):
         b2 = Breath()
         b2.set_knob(k)
-        if b2.curved >= REGISTER_UP:
+        if b2.effort >= REGISTER_UP:
             knob = k
             break
     b = Breath()
@@ -280,22 +283,67 @@ def test_legato_has_no_chiff():
 
 
 def test_curve_is_monotonic():
-    """More knob must always mean more air."""
+    """More knob must always mean more of both curves."""
     print("breath curve")
-    prev = -1
+    prev_l = prev_e = -1
     bad = []
     for k in range(4096):
         b = Breath()
         b.set_knob(k)
-        if b.curved < prev:
+        if b.curved < prev_l or b.effort < prev_e:
             bad.append(k)
-        prev = b.curved
-    check("the curve never goes backwards", bad, [])
+        prev_l, prev_e = b.curved, b.effort
+    check("neither curve ever goes backwards", bad, [])
+
+
+def test_level_is_log():
+    """Level must rise FAST and flatten, not creep up linearly.
+
+    Reported from hardware: "the knob is a bit less responsive than I'd like -
+    linear rather than the log it needs to be". v2.0 SQUARED the level, which
+    is the opposite curve -- it spends the whole sweep still getting louder.
+    """
+    print("level curve shape")
+    def level_at(pct):
+        b = Breath()
+        b.set_knob(int(4095 * pct / 100))
+        return b.curved
+
+    for pct in (10, 20, 30, 50, 70, 100):
+        print(f"        {pct:3d}% knob -> level {level_at(pct):4d}")
+
+    check_true("half the travel is already near full level",
+               level_at(50) > 3200, f"{level_at(50)} of 4096")
+    check_true("a third of the travel is well on the way",
+               level_at(33) > 2200, f"{level_at(33)} of 4096")
+    # And the top half must NOT be where the loudness lives.
+    check_true("the top half adds little level",
+               level_at(100) - level_at(50) < 900,
+               f"+{level_at(100)-level_at(50)} over the last half")
+
+
+def test_effort_keeps_climbing():
+    """Once level flattens, effort must keep going -- that is what gives the
+    top of the knob something to do."""
+    print("effort curve")
+    def eff(pct):
+        b = Breath()
+        b.set_knob(int(4095 * pct / 100))
+        return b.effort
+    for pct in (50, 70, 85, 100):
+        print(f"        {pct:3d}% knob -> effort {eff(pct):4d}")
+    check_true("effort is still rising through the top half",
+               eff(100) - eff(50) > 1600,
+               f"+{eff(100)-eff(50)} over the last half")
+    # The two must genuinely diverge, or there was no point splitting them.
+    b = Breath(); b.set_knob(int(4095 * 0.75))
+    check_true("level and effort diverge", b.curved - b.effort > 800,
+               f"level {b.curved} vs effort {b.effort}")
 
     # And the register boundary should land in the upper half of the travel --
     # that is the whole reason the curve is squared rather than linear.
     knob = next(k for k in range(4096)
-                if (lambda b: (b.set_knob(k), b.curved)[1])(Breath()) >= REGISTER_UP)
+                if (lambda b: (b.set_knob(k), b.effort)[1])(Breath()) >= REGISTER_UP)
     pct = 100 * knob / 4095
     print(f"        octave jump at {pct:.0f}% of travel")
     # It must be high enough to be a deliberate act and low enough to be
@@ -314,6 +362,8 @@ def main():
     test_chiff_rate_limit()
     test_legato_has_no_chiff()
     test_curve_is_monotonic()
+    test_level_is_log()
+    test_effort_keeps_climbing()
 
     print()
     if FAILURES:
