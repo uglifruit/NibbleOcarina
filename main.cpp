@@ -244,23 +244,42 @@ private:
 		// Breath: knob plus CV In 2 when something is patched there.
 		const int32_t cvAdd = Connected(Input::CV2) ? CVIn2() : 0;
 		breath_.SetKnob(KnobVal(Knob::Main), cvAdd);
-		breath_.SetStopped(SwitchVal() == Switch::Down);
 		breath_.SetArticulation(SwitchVal() == Switch::Up ? Articulation::Legato
 		                                                  : Articulation::Tongued);
+
+		// The chiff stop damps the BORE as well as cutting the air. Zeroing the
+		// breath alone leaves the resonator ringing for its full decay, which
+		// is the one thing a stop exists to prevent — it would be a gate close
+		// wearing a stop's name.
+		const bool stopped = (SwitchVal() == Switch::Down);
+		if (stopped != stopLast_)
+		{
+			stopLast_ = stopped;
+			breath_.SetStopped(stopped);
+			if (stopped) bore_.Mute(); else bore_.Unmute();
+		}
 
 		// Pulse In 1 re-articulates without changing the fingering.
 		if (PulseIn1RisingEdge()) Retrigger();
 
+		// ChiffFired() is an edge that Tick() CONSUMES, so it has to be read
+		// first. Checking it after Tick() reads false every time — Pulse Out 2
+		// would never fire and the chiff's extra noise would never be applied,
+		// both silently. The models cannot catch this one: breathsim tests
+		// Breath in isolation and gets the order right by construction; it is
+		// the caller's sequencing that is wrong or right.
+		const bool chiff = breath_.ChiffFired();
+
 		breath_.Tick();
 
-		if (breath_.ChiffFired())
+		if (chiff)
 		{
 			PulseOut2(true);
 			pulseTimer_ = kSampleRate / 500;      // 2ms
 		}
 
 		ReadScale();
-		ReadTimbre();
+		ReadTimbre(chiff);
 		UpdatePitch();
 		UpdateCVs();
 	}
@@ -356,36 +375,44 @@ private:
 		}
 	}
 
-	void __not_in_flash_func(ReadTimbre)()
+	/// X sweeps damping and noise together, so the whole travel is musically
+	/// useful rather than one parameter being interesting and the other noise.
+	/// Damping is brightness; noise is breathiness.
+	///
+	/// Re-sent whenever X moves OR while a chiff is decaying, since the chiff
+	/// rides on top of the standing noise amount and has to be re-applied as it
+	/// falls. `chiffing` is passed in rather than read from Breath because
+	/// Tick() has already consumed the edge by this point — see ControlTick().
+	void __not_in_flash_func(ReadTimbre)(bool chiffing)
 	{
 		const int32_t x = KnobVal(Knob::X);
-		if (x > timbreLast_ + 24 || x < timbreLast_ - 24)
-		{
-			timbreLast_ = x;
-			// One knob, two parameters, moving together so the whole travel is
-			// musically useful rather than one being interesting and the other
-			// noise. Damping is brightness; noise is breathiness.
-			const int32_t damp = kDampMinQ15
-			                   + ((kDampMaxQ15 - kDampMinQ15) * x >> 12);
-			const int32_t noise = 8000 - ((6500 * x) >> 12);
-			bore_.SetTimbre(damp, noise + breath_.ChiffNoiseQ15());
-		}
-		else if (breath_.ChiffFired())
-		{
-			// The chiff needs its extra noise applied even when X has not moved.
-			const int32_t damp = kDampMinQ15
-			                   + ((kDampMaxQ15 - kDampMinQ15) * timbreLast_ >> 12);
-			const int32_t noise = 8000 - ((6500 * timbreLast_) >> 12);
-			bore_.SetTimbre(damp, noise + breath_.ChiffNoiseQ15());
-		}
+		const bool moved = (x > timbreLast_ + 24 || x < timbreLast_ - 24);
+		if (moved) timbreLast_ = x;
+
+		// The chiff decays over ~12ms, so its noise must be re-sent every tick
+		// of the burst, not only on the tick it began.
+		if (!moved && !chiffing && breath_.ChiffNoiseQ15() == 0) return;
+
+		const int32_t damp = kDampMinQ15
+		                   + ((kDampMaxQ15 - kDampMinQ15) * timbreLast_ >> 12);
+		const int32_t noise = 8000 - ((6500 * timbreLast_) >> 12);
+		bore_.SetTimbre(damp, noise + breath_.ChiffNoiseQ15());
 	}
 
 	/// combo -> degree -> semitone -> delay, and the CV to match.
 	void __not_in_flash_func(UpdatePitch)()
 	{
 		const int32_t vib = breath_.VibratoCents();
+		const bool gliding = (breath_.Art() == Articulation::Legato)
+		                   && (glideSemiQ8_ != targetSemiQ8_);
 
-		if (!pitchDirty_ && breath_.Register() == regLast_ && vib == vibLast_)
+		// The glide has to keep stepping toward its target across many ticks,
+		// so "nothing changed" is not a reason to stop — it is the normal state
+		// DURING a glide. Early-returning on it left the pitch advancing only
+		// when the vibrato happened to move, which is a slur that arrives in
+		// jerks or, with vibrato off, never arrives at all.
+		if (!pitchDirty_ && !gliding
+		    && breath_.Register() == regLast_ && vib == vibLast_)
 			return;
 
 		pitchDirty_ = false;
@@ -398,10 +425,16 @@ private:
 		const int usable = kUsableDegrees[scale_];
 		if (degree >= usable) degree = usable - 1;
 
+		// Coarse tune shifts the root, in BOTH directions.
+		//
+		// Clamping negative coarse away would leave the bore at the root while
+		// PitchMillivolts() still applied the offset to CV Out 1 — the two
+		// outputs would disagree by up to a full octave, and only when tuning
+		// flat, which is the hardest kind of discrepancy to notice.
 		int32_t root = kBaseNote + coarse_;
-		const int32_t maxRoot = kMaxRootFor[scale_];
-		if (coarse_ > maxRoot) root = kBaseNote + maxRoot;
-		if (coarse_ < 0)       root = kBaseNote;
+		const int32_t maxRoot = kBaseNote + kMaxRootFor[scale_];
+		if (root > maxRoot)     root = maxRoot;
+		if (root < kPitchLoNote) root = kPitchLoNote;
 
 		int32_t semi = QuantizeNote(root, scale_, degree);
 
@@ -410,34 +443,60 @@ private:
 		if (regLast_) semi += 12;
 		if (semi > kPitchHiNote) semi = kPitchHiNote;
 
-		semi_ = semi;
+		// GLIDE IN PITCH SPACE, NOT DELAY SPACE.
+		//
+		// The obvious thing is to slew the delay length, and it is wrong twice
+		// over. Delay is proportional to 1/frequency, so a linear slew through
+		// it sweeps pitch non-linearly — fast at the top, crawling at the
+		// bottom. And it forces the CV, which IS linear in pitch, to be
+		// recovered from a ratio: a log, or an approximation that is 500 cents
+		// out over the octave a glide routinely spans, or a runtime 64-bit
+		// divide of exactly the kind that blew NIBBLE's sample budget.
+		//
+		// Sliding the SEMITONE instead (in Q8, so the steps are smooth) makes
+		// the glide musically even, and both outputs fall out of the same
+		// number with no conversion at all.
+		const int32_t targetSemiQ8 = (semi << 8);
+		targetSemiQ8_ = targetSemiQ8;
 
-		uint32_t d = SemiToDelayQ16(semi);
-		const int32_t cents = fine_ + vib;
-		if (cents) d = ApplyFineCents(d, cents);
-
-		if (breath_.Art() == Articulation::Legato)
+		if (breath_.Art() == Articulation::Legato && glideSemiQ8_ != 0)
 		{
-			// Glide. slew_exact and NOT slew: the plain shift stalls short of
-			// its target, which on a pitch is a permanent detune rather than a
+			// slew_exact and NOT slew: the plain shift stalls short of its
+			// target, which on a pitch is a permanent detune rather than a
 			// harmless approximation.
-			glideQ16_ = static_cast<uint32_t>(
-				slew_exact(static_cast<int32_t>(glideQ16_),
-				           static_cast<int32_t>(d), kGlideShift));
+			glideSemiQ8_ = slew_exact(glideSemiQ8_, targetSemiQ8, kGlideShift);
 		}
 		else
 		{
-			glideQ16_ = d;
+			glideSemiQ8_ = targetSemiQ8;
 		}
-		bore_.SetDelayQ16(glideQ16_);
+
+		// Whole semitones pick the table entry; the Q8 remainder becomes cents
+		// and rides along with the fine tune and vibrato.
+		const int32_t glideSemi  = glideSemiQ8_ >> 8;
+		const int32_t glideCents = ((glideSemiQ8_ - (glideSemi << 8)) * 100) >> 8;
+
+		uint32_t d = SemiToDelayQ16(glideSemi);
+		const int32_t cents = fine_ + vib + glideCents;
+		if (cents) d = ApplyFineCents(d, cents);
+		bore_.SetDelayQ16(d);
+
+		// The CV comes from the same two numbers, so voice and CV cannot
+		// disagree during a slur.
+		cvSemi_  = glideSemi;
+		cvCents_ = fine_ + vib + glideCents;
 	}
 
 	void __not_in_flash_func(UpdateCVs)()
 	{
+		// cvSemi_/cvCents_ are set by UpdatePitch() from the SAME two numbers
+		// that positioned the bore, so voice and CV cannot disagree during a
+		// slur — see the note on gliding in pitch space there.
+		//
 		// CVOutMillivolts is flash-resident, so calling it every tick would put
 		// XIP reads in the control path. Only call it when the value changes,
 		// which for a stepped instrument is once per note.
-		const int32_t mv = PitchMillivolts(semi_, fine_ + breath_.VibratoCents());
+		const int32_t mv = PitchMillivolts(cvSemi_, cvCents_);
 		if (mv != cvPitchLast_)
 		{
 			cvPitchLast_ = mv;
@@ -574,6 +633,15 @@ private:
 
 	void __not_in_flash_func(TuneTick)()
 	{
+		// Keep the detector running even though the fingering is ignored here.
+		// Its smoothing and settle plateau are continuous state: leave them
+		// unfed for the length of a tuning session and the first note back in
+		// Play is matched against a plateau from before it started, which
+		// swallows that note or fires it late. LearnTick does the same, for the
+		// same reason.
+		int8_t dummy = kComboNone;
+		(void)levels_.Step(CVIn1(), dummy);
+
 		coarse_ = coarseKnob_.Update(KnobVal(Knob::Y), kCoarseDen,
 		                             kCoarseLo, kCoarseHi);
 		fine_   = fineKnob_.Update(KnobVal(Knob::Main), kFineDen,
@@ -581,18 +649,36 @@ private:
 
 		// Drone the scale root, fingering ignored, so there is a stable
 		// reference to tune against.
-		const int32_t root = kBaseNote + (coarse_ > 0 ? coarse_ : 0);
-		semi_ = QuantizeNote(root, scale_, 0);
-		uint32_t d = SemiToDelayQ16(semi_);
+		//
+		// Coarse applies in BOTH directions here, exactly as in UpdatePitch():
+		// clamping the negative half away would make the drone ignore flat
+		// tuning while CV Out 1 still followed it, so the two would disagree
+		// precisely while being used to tune something.
+		int32_t root = kBaseNote + coarse_;
+		const int32_t maxRoot = kBaseNote + kMaxRootFor[scale_];
+		if (root > maxRoot)      root = maxRoot;
+		if (root < kPitchLoNote) root = kPitchLoNote;
+
+		const int32_t semi = QuantizeNote(root, scale_, 0);
+		uint32_t d = SemiToDelayQ16(semi);
 		if (fine_) d = ApplyFineCents(d, fine_);
 		bore_.SetDelayQ16(d);
-		glideQ16_ = d;
+
+		// Keep the glide anchored here, so leaving TUNE does not slide from
+		// wherever the drone happened to be.
+		glideSemiQ8_ = targetSemiQ8_ = (semi << 8);
+		cvSemi_  = semi;
+		cvCents_ = fine_;
 
 		UpdateCVs();
 
 		// A tap leaves, keeping whatever offsets are set.
 		if (tapped_)
 		{
+			// Same reasoning as FinishLearn(): current_ still names whatever
+			// the CV happened to be sitting on, and if the first real press
+			// matches it the change is silently swallowed as "no change".
+			levels_.ResetHeld();
 			ui_ = UiMode::Play;
 			combo_ = kComboNone;
 			pitchDirty_ = true;
@@ -793,6 +879,7 @@ private:
 	int32_t    captured_[kMaxLevels] = {};
 
 	bool    tapped_    = false;
+	bool    stopLast_  = false;
 	int32_t downTicks_ = 0;
 	bool    downFired_ = false;
 	int32_t upTicks_   = 0;
@@ -800,8 +887,10 @@ private:
 
 	int8_t   combo_      = kComboNone;
 	int      scale_      = 0;
-	int32_t  semi_       = kBaseNote;
-	uint32_t glideQ16_   = 0;
+	int32_t  glideSemiQ8_  = 0;   ///< where the glide is now, Q8 semitones
+	int32_t  targetSemiQ8_ = 0;   ///< where it is heading
+	int32_t  cvSemi_       = kBaseNote;
+	int32_t  cvCents_      = 0;
 	bool     pitchDirty_ = true;
 	int      regLast_    = 0;
 	int32_t  vibLast_    = 0;

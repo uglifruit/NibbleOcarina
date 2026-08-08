@@ -16,6 +16,7 @@ void Waveguide::Init(uint32_t seed)
 	for (int i = 0; i < kDelaySize; i++) buf_[i] = 0;
 	write_ = 0;
 	lp_ = dcX1_ = dcY1_ = noiseLp_ = lastNoise_ = 0;
+	gainQ15_ = kLoopGainQ15;   // SetTimbre no longer owns this — see Mute()
 	// xorshift32 never recovers from a zero seed.
 	rng_ = seed ? seed : 0x1234567u;
 	SetDelayQ16(static_cast<uint32_t>(256) << 16);
@@ -45,7 +46,14 @@ void Waveguide::SetTimbre(int32_t dampQ15, int32_t noiseQ15)
 	if (dampQ15 > kDampMaxQ15) dampQ15 = kDampMaxQ15;
 	dampQ15_  = dampQ15;
 	noiseQ15_ = noiseQ15;
-	gainQ15_  = kLoopGainQ15;
+
+	// Deliberately does NOT touch the loop gain.
+	//
+	// An earlier version restored gainQ15_ here, which quietly cancelled the
+	// chiff stop: X moving, or a chiff decaying, calls this every tick, so the
+	// mute survived only until the next one. Mute state belongs to Mute() and
+	// Unmute() alone — making it depend on which other setter ran last is how
+	// a stop becomes intermittent.
 }
 
 void Waveguide::Mute()
@@ -53,7 +61,12 @@ void Waveguide::Mute()
 	// Drop the loop gain so the bore damps out over ~50ms instead of ringing
 	// on. This is a STOP, not a gate close: releasing it re-attacks cleanly
 	// because the resonator has actually been emptied.
-	gainQ15_ = 27000;
+	gainQ15_ = kMuteGainQ15;
+}
+
+void Waveguide::Unmute()
+{
+	gainQ15_ = kLoopGainQ15;
 }
 
 /// Linear-interpolated read. The write side stays integer — only the read is

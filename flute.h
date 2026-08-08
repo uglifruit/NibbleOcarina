@@ -107,6 +107,10 @@ constexpr int32_t kBreathOffsetQ12 = 4096;
 /// the resonator either dead or self-oscillating, and neither is musical.
 constexpr int32_t kLoopGainQ15 = 32000;
 
+/// Loop gain while the chiff stop is held. Low enough that the bore empties in
+/// ~50ms rather than ringing through its natural decay.
+constexpr int32_t kMuteGainQ15 = 27000;
+
 /// Reflection-filter cutoff, Q15. Larger is brighter.
 ///
 /// 12000 rather than the more obvious 20000, and the reason is specific: at
@@ -145,8 +149,11 @@ public:
 	/// Timbre: damping and noise amount, both Q15. Control rate only.
 	void SetTimbre(int32_t dampQ15, int32_t noiseQ15);
 
-	/// Damp the bore hard, for the chiff stop. Restored by the next SetTimbre.
+	/// Damp the bore hard, for the chiff stop. Explicitly paired with Unmute():
+	/// no other setter may touch the loop gain, or the stop becomes
+	/// intermittent depending on what else happened to be called.
 	void Mute();
+	void Unmute();
 
 	/// One sample. `breathQ12` is 0..4095; zero is silence.
 	int32_t Step(int32_t breathQ12);
