@@ -17,11 +17,12 @@ import sys
 import os
 
 SR = 48000.0
-LO_NOTE, HI_NOTE = 36, 96
+LO_NOTE, HI_NOTE = 36, 75
 MV_PER_SEMI_Q8 = 21333
 MAX_ROOT = 12
 MAX_DEGREE = 15          # 15-mode uses degrees 0..14
-DELAY_MAX = 1024         # flute.h: usable delay, buffer is twice this
+DELAY_MAX = 768          # flute.h kDelayMax; the buffer itself is 1024
+LOOP_FACTOR = 1.5        # pitch.h kLoopFactorNum/Den; see tools/flutesim.py
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -130,15 +131,15 @@ def test_table_exact():
     worst = 0.0
     worst_i = -1
     for i in range(12):
-        want = round(65536 * SR / midi_hz(LO_NOTE + i))
+        want = round(65536 * SR / (LOOP_FACTOR * midi_hz(LO_NOTE + i)))
         if TABLE[i] != want:
             check(f"entry {i} exact", TABLE[i], want)
-        got_f = 65536 * SR / TABLE[i]
+        got_f = 65536 * SR / (LOOP_FACTOR * TABLE[i])
         e = abs(cents(got_f, midi_hz(LO_NOTE + i)))
         if e > worst:
             worst, worst_i = e, i
     check("every entry matches exact arithmetic",
-          all(TABLE[i] == round(65536 * SR / midi_hz(LO_NOTE + i))
+          all(TABLE[i] == round(65536 * SR / (LOOP_FACTOR * midi_hz(LO_NOTE + i)))
               for i in range(12)), True)
     print(f"        worst rounding error: {worst:.4f} cents (entry {worst_i})")
 
@@ -149,7 +150,7 @@ def test_octave_shift():
     worst, worst_n = 0.0, -1
     for n in range(LO_NOTE, HI_NOTE + 1):
         d = semi_to_delay_q16(n) / 65536.0
-        f = SR / d
+        f = SR / (LOOP_FACTOR * d)
         e = abs(cents(f, midi_hz(n)))
         if e > worst:
             worst, worst_n = e, n
@@ -175,8 +176,10 @@ def test_delay_fits_buffer():
     d_hi = semi_to_delay_q16(HI_NOTE) / 65536.0
     print(f"        highest note: {d_hi:.1f} samples "
           f"(jet tap at ~{d_hi/2:.1f})")
-    # Below about 8 samples the linear interpolator has too little to work with.
-    check("highest note leaves a usable loop", d_hi > 16, True)
+    # Below ~20 samples the jet tap loses the resolution to place its phase,
+    # the fundamental collapses and the bore plays the octave instead. Measured
+    # in tools/flutesim.py, and the reason kPitchHiNote is 75 rather than 96.
+    check("highest note leaves a usable loop", d_hi > 40, True)
 
 
 def test_fine_cents():
@@ -207,7 +210,8 @@ def test_cv_and_bore_agree():
     worst, worst_at = 0.0, None
     for n in range(LO_NOTE, HI_NOTE + 1):
         for c in (-100, -37, 0, 37, 100):
-            f_bore = SR / (apply_fine_cents(semi_to_delay_q16(n), c) / 65536.0)
+            f_bore = SR / (LOOP_FACTOR *
+                           (apply_fine_cents(semi_to_delay_q16(n), c) / 65536.0))
             # CV is 1V/oct referenced to the scale root at kBaseNote = 36 = 3V.
             mv = pitch_mv(n, c)
             f_cv = midi_hz(LO_NOTE) * 2 ** (mv / 1000.0)
@@ -220,6 +224,18 @@ def test_cv_and_bore_agree():
     check_within("bore and CV agree within 5 cents", worst, 0.0, 5.0, "c")
 
 
+def load_uint_array(fname, decl):
+    """Pull a constexpr uint8_t array out of a header, so this tests the
+    shipped values rather than a copy that could drift."""
+    src = open(os.path.join(ROOT, fname), encoding="utf-8").read()
+    body = src[src.index(decl):]
+    body = body[body.index("{"):body.index("};")]
+    # Strip // comments first: the entries carry trailing notes that contain
+    # numbers ("span 24"), which would otherwise be parsed as array elements.
+    body = re.sub(r"//[^\n]*", "", body)
+    return [int(x) for x in re.findall(r"\d+", body)]
+
+
 def test_no_cv_clipping():
     """kMaxRoot must not let any scale run the CV output past 6V.
 
@@ -227,35 +243,59 @@ def test_no_cv_clipping():
     kMaxRoot of 36 was derived for TEN degrees and would silently clip the top
     of a fifteen-degree arpeggio.
     """
-    print("CV headroom")
+    print("CV headroom and bore fit")
     scales = load_scales()
     check("parsed 12 scales", len(scales), 12)
+
+    max_root = load_uint_array("pitch.h", "kMaxRootFor[12]")
+    usable = load_uint_array("pitch.h", "kUsableDegrees[12]")
+    check("kMaxRootFor has 12 entries", len(max_root), 12)
+    check("kUsableDegrees has 12 entries", len(usable), 12)
+
+    # 1. Nothing may exceed the 6V rail.
     worst, worst_at = -99999, None
     for si, sc in enumerate(scales):
-        for root in range(0, MAX_ROOT + 1):
-            for deg in range(MAX_DEGREE):
+        for root in range(0, max_root[si] + 1):
+            for deg in range(usable[si]):
                 n = quantize_note(LO_NOTE + root, sc, deg)
-                mv = pitch_mv(n, 100)      # sharpest fine tune too
+                mv = pitch_mv(n, 100)          # sharpest fine tune too
                 if mv > worst:
                     worst, worst_at = mv, (si, root, deg, n)
     print(f"        highest CV: {worst}mV (scale {worst_at[0]}, root +{worst_at[1]}, "
           f"degree {worst_at[2]}, MIDI {worst_at[3]})")
     check("top of every scale stays under 6000mV", worst <= 6000, True)
 
-    # The BORE is the tighter limit, and the failure is silent: above its top
-    # note the delay clamps while the CV keeps climbing, so the card plays one
-    # pitch and tells the rack another. kMaxRoot must respect this, not just
-    # the voltage rail.
-    top, top_at = -1, None
+    # 2. THE SILENT ONE. Past the bore's top note the delay clamps while the CV
+    #    keeps climbing, so the card plays one pitch and tells the rack another.
+    #    Nothing in the system would flag it, so it is asserted here.
+    over = []
+    under = []
     for si, sc in enumerate(scales):
-        for root in range(0, MAX_ROOT + 1):
-            for deg in range(MAX_DEGREE):
+        for root in range(0, max_root[si] + 1):
+            for deg in range(usable[si]):
                 n = quantize_note(LO_NOTE + root, sc, deg)
-                if n > top:
-                    top, top_at = n, (si, root, deg)
-    print(f"        highest bore note: MIDI {top} (limit {HI_NOTE}, "
-          f"scale {top_at[0]}, root +{top_at[1]}, degree {top_at[2]})")
-    check("no scale is clamped by the bore's top note", top <= HI_NOTE, True)
+                if n > HI_NOTE:
+                    over.append((si, root, deg, n))
+                if n < LO_NOTE:
+                    under.append((si, root, deg, n))
+    check("no reachable note is above the bore's top", over, [])
+    check("no reachable note is below the bore's floor", under, [])
+
+    # 3. kMaxRootFor must be as generous as it can be: a scale with headroom
+    #    should not be denied transposition it could have had.
+    tight = []
+    for si, sc in enumerate(scales):
+        r = max_root[si] + 1
+        if r > 12:
+            continue
+        fits = all(quantize_note(LO_NOTE + r, sc, d) <= HI_NOTE
+                   for d in range(usable[si]))
+        if fits:
+            tight.append((si, max_root[si]))
+    check("no scale is transposed less than it could be", tight, [])
+
+    print(f"        usable degrees per scale: {usable}")
+    print(f"        max transpose per scale:  {max_root}")
 
 
 def main():

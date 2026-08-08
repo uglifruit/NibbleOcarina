@@ -246,23 +246,15 @@ static inline int32_t SemisToMillivolts(int32_t semis)
 /// every patch 3V up and put the top of an arpeggio scale past the 6V rail.
 constexpr int kBaseNote = 36;
 
-/// Highest the root may be transposed, in semitones. One octave.
+/// The most the root may ever be transposed, in semitones — one octave.
 ///
-/// TWO independent limits apply and the tighter one wins, which is worth
-/// recording because the obvious derivation only finds the looser:
+/// This is only the CEILING on the coarse-tune control. The binding limit is
+/// PER SCALE and lives in pitch.h as kMaxRootFor[], because a 7-note mode has
+/// an octave of headroom inside the bore while a 4-note arpeggio has none.
 ///
-///   CV:   at +100 cents of fine tune, a root of 28 puts the top of a 4-note
-///         arpeggio (degree 14 = +43 semitones) at 5984mV, just inside the
-///         6V rail. So the CV allows 28.
-///
-///   BORE: the same degree lands on MIDI 36 + root + 43, and the bore clamps
-///         at kPitchHiNote = 96 (see pitch.h). Anything above root 17 is
-///         SILENTLY CLAMPED — the CV keeps rising while the internal voice
-///         stops, so the card plays one note and tells the rack another.
-///
-/// 12 sits comfortably under both, and an octave is a better musical unit for
-/// a transpose control than an arbitrary 17. tools/pitchsim.py asserts both
-/// limits, so raising this will fail loudly rather than detune quietly.
+/// The failure this guards against is silent: past the bore's top note the
+/// delay clamps while CV Out 1 keeps climbing, so the card plays one pitch and
+/// reports another, and nothing in the system notices.
 constexpr int kMaxRoot = 12;
 
 // ---------------------------------------------------------------------------

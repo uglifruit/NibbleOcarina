@@ -5,26 +5,31 @@
 // nothing else, which is the hardest kind of bug to notice by ear.
 
 #include "pitch.h"
+#include "pico.h"   // __not_in_flash
 
 namespace nib {
 
-/// round(65536 * 48000 / f) for MIDI notes 36..47 (C2..B2).
+/// round(65536 * 48000 / (1.5 * f)) for MIDI notes 36..47 (C2..B2).
+///
+/// The 1.5 is not a fudge factor, it is the loop geometry — see kLoopFactorNum
+/// in pitch.h. Deriving it wrong puts the whole instrument a fourth sharp,
+/// uniformly, which is exactly what the first version of this table did.
 ///
 /// __not_in_flash so the lookup in SemiToDelayQ16() cannot put an XIP read in
 /// a control tick. 48 bytes of RAM is a trivial price for that guarantee.
 const uint32_t __not_in_flash("delaytab") kDelayQ16Base[12] = {
-	48095116u,   // C2    65.406Hz -> 733.87 samples
-	45395745u,   // C#2   69.296Hz -> 692.68 samples
-	42847877u,   // D2    73.416Hz -> 653.81 samples
-	40443011u,   // D#2   77.782Hz -> 617.11 samples
-	38173119u,   // E2    82.407Hz -> 582.48 samples
-	36030627u,   // F2    87.307Hz -> 549.78 samples
-	34008383u,   // F#2   92.499Hz -> 518.93 samples
-	32099639u,   // G2    97.999Hz -> 489.80 samples
-	30298025u,   // G#2  103.826Hz -> 462.31 samples
-	28597527u,   // A2   110.000Hz -> 436.36 samples
-	26992471u,   // A#2  116.541Hz -> 411.87 samples
-	25477500u,   // B2   123.471Hz -> 388.76 samples
+	32063411u,   // C2   65.406Hz -> 489.25 samples
+	30263830u,   // C#2  69.296Hz -> 461.79 samples
+	28565252u,   // D2   73.416Hz -> 435.87 samples
+	26962007u,   // D#2  77.782Hz -> 411.41 samples
+	25448746u,   // E2   82.407Hz -> 388.32 samples
+	24020418u,   // F2   87.307Hz -> 366.52 samples
+	22672255u,   // F#2  92.499Hz -> 345.95 samples
+	21399759u,   // G2   97.999Hz -> 326.53 samples
+	20198683u,   // G#2 103.826Hz -> 308.21 samples
+	19065018u,   // A2  110.000Hz -> 290.91 samples
+	17994981u,   // A#2 116.541Hz -> 274.58 samples
+	16985000u,   // B2  123.471Hz -> 259.17 samples
 };
 
 } // namespace nib

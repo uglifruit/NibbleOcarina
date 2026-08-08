@@ -187,6 +187,50 @@ static inline int32_t __attribute__((always_inline)) knob_to_q16(int32_t knob)
 	return knob << 4;
 }
 
+/// Clamp to int16_t, for delay-line writes.
+///
+/// A waveguide that exceeds its storage does not merely get loud, it WRAPS,
+/// and a wrapped sample inside a feedback loop is a permanent buzz rather than
+/// a transient. Clamping makes the worst case ugly instead of stuck.
+static inline int16_t __attribute__((always_inline)) clampS16(int32_t v)
+{
+	if (v >  32767) return  32767;
+	if (v < -32768) return -32768;
+	return static_cast<int16_t>(v);
+}
+
+// ---------------------------------------------------------------------------
+// The jet nonlinearity
+// ---------------------------------------------------------------------------
+
+/// y = x - x^3/3, saturating. Input and output Q12 (4096 == 1.0).
+///
+/// This lives here rather than in flute.cpp because tools/flutesim.py mirrors
+/// this file, and the shape of this curve is the thing most worth modelling.
+///
+/// What it does and does not do, measured rather than assumed:
+///
+///   IT DOES set the timbre. The curve is non-monotone past x = 1/sqrt(3): it
+///   turns over, and driving further along it moves energy into the upper
+///   harmonics. That is why blowing harder brightens the tone.
+///
+///   IT DOES NOT, on its own, overblow. The original design assumed the
+///   turnover would flip the bore into its second register as breath rose. It
+///   does not: the harmonic balance shifts but the loop keeps preferring the
+///   same mode. See the note in flute.h — the register change is explicit.
+///
+/// The clamp at +/-1.5 is the jet saturating, which a real one also does. It
+/// also bounds the cube: x peaks at 6144, so x*x peaks at 37.7M and x2*x at
+/// 56.6M, both comfortably inside int32. No 64-bit anywhere.
+static inline int32_t __attribute__((always_inline)) jet_cubic(int32_t x)
+{
+	if (x >  6144) x =  6144;
+	if (x < -6144) x = -6144;
+	const int32_t x2 = (x * x) >> 12;
+	const int32_t x3 = (x2 * x) >> 12;
+	return x - ((x3 * 21845) >> 16);      // x^3 / 3
+}
+
 // ---------------------------------------------------------------------------
 // Rate -> phase increment
 // ---------------------------------------------------------------------------
