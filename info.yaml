@@ -1,0 +1,169 @@
+draft: false
+Name: NIBBLE OCARINA
+short-description: Turns the Workshop System's four buttons into the finger holes of a physically-modelled flute you blow with a knob
+Language: C++ (ComputerCard)
+Creator: Andy Jenkinson (uglifruit)
+Version: "1.0.0"
+Status: Untested on hardware
+License: CC-BY-4.0
+repository: https://github.com/uglifruit/NibbleOcarina
+Editor: none
+date-created: 2026-08-08
+date-updated: 2026-08-08
+
+contact:
+  social:
+    github: https://github.com/uglifruit
+
+uf2:
+  - path: UF2/ocarina.uf2
+    name: NIBBLE OCARINA 1.0.0
+
+tags:
+  - physical-modelling
+  - waveguide
+  - flute
+  - wind-instrument
+  - keyboard
+  - scales
+  - quantiser
+  - four-voltages
+
+summary: |
+  Turns the Workshop System's four buttons into the finger holes of a
+  physically-modelled flute.<br><br>
+
+  Patch one output of the FOUR VOLTAGES module into CV In 1, teach the card
+  which voltage each button combination produces, and its buttons become
+  fingerings. The Main knob is your breath - turn it up and the instrument
+  speaks, turn it down and it stops. Blow hard and it jumps the octave.<br><br>
+
+  The voice is a real waveguide, not a sample and not a filtered oscillator - a
+  delay line, a nonlinear jet excitation, a reflection filter and a DC blocker,
+  all in fixed point. It is in tune to about four cents across its range, and it
+  gets brighter and thinner toward the top the way a real flute does, because
+  the model does that on its own.<br><br>
+
+  SETUP - patch one Four Voltages output into CV In 1. That is the whole
+  required patch. Calibration starts by itself at power-on - hold each
+  combination the LEDs ask for and tap the switch. Re-calibrate whenever you
+  move the Four Voltages knob, since it moves every voltage at once.<br><br>
+
+  SILENCE IS THE KNOB, NOT THE FINGERING - and that is forced by the hardware
+  rather than chosen. Four Voltages has no rest voltage - let go of every button
+  and the output stays where it was, so "no holes covered" is not a state it can
+  express and cannot mean silence. On a real ocarina you stop by not blowing,
+  which is exactly what the Main knob does here.<br><br>
+
+  RELEASING A FINGER IS A NOTE - come off A+B onto A and you hear A. That is
+  what makes trilling work - hold one hole, waggle another, and you get a clean
+  alternation up to about sixteen a second. Switch UP is the trill mode - it
+  glides between the two pitches instead of articulating each one.<br><br>
+
+  FIFTEEN COMBINATIONS OR TEN - four buttons make fifteen usable combinations,
+  and whether a real Four Voltages can space fifteen voltages far enough apart
+  to tell them reliably is genuinely unknown. So the card measures rather than
+  assuming - calibration walks all fifteen, computes the tightest gap between
+  any two, and either runs all fifteen or falls back to the four singles and six
+  pairs that are known to work, ignoring the rest rather than playing them
+  wrongly. Expect the ten - fifteen levels need nearly six volts of near-perfect
+  even spacing, and resistor networks are rarely that even.<br><br>
+
+  When it falls back, the LEDs show HOW CLOSE IT GOT, in quarters - one LED
+  means two combinations nearly collided and that output will never work, four
+  means a small nudge of the Four Voltages knob might do it. Four Voltages has
+  four outputs and they behave differently, so trying each takes a minute -
+  holding the switch down for two seconds re-enters calibration from anywhere,
+  and holding it up for one second shows the bar again at any time.<br><br>
+
+  TUNING - hold the switch up for three seconds and the card drones the root of
+  the current scale on both the audio and the pitch CV. Y is coarse in
+  semitones, Main is fine in cents, and both pick up from wherever the knobs
+  already are, so entering tune never jumps the pitch. Nothing is saved to flash
+  - not the tuning and not the calibration.<br><br>
+
+  ON OVERBLOWING - the octave jump is deliberate rather than emergent, and it is
+  worth saying so. A cubic jet nonlinearity brightens the tone as you blow
+  harder but does not, on its own, flip which mode the bore prefers - measured,
+  not assumed. So hard breath adds an octave explicitly, with a hysteresis band
+  so the boundary cannot flutter. It sounds the same and it always works.
+
+panel:
+  inputs:
+    - id: CVIn1
+      name: Four Voltages
+      type: cv
+      description: Patch one output of the Four Voltages module here. This is the fingering. The card learns which voltage each button combination produces, so it works at any position of the Four Voltages knob - re-learn whenever you move it. It also measures how well separated the combinations are and tells you, rather than guessing.
+    - id: CVIn2
+      name: Breath
+      type: cv
+      description: Adds to the Main knob, so an envelope or LFO can blow the instrument. Only active when something is actually patched, and it sums rather than replacing - set a floor on the knob and let the CV push above it, or leave the knob at zero and let the CV do all the blowing. Since breath also decides the register, a large enough CV will jump the octave on its own.
+    - id: PulseIn1
+      name: Tongue
+      type: pulse
+      description: Re-articulates the current note without changing the fingering, which is how you play repeated notes on one hole. Fires a chiff in tongued articulation; in legato it is deliberately ignored, because a slur that re-articulates is not a slur.
+    - id: PulseIn2
+      name: Unused
+      type: pulse
+      description: Not used in this version.
+  outputs:
+    - id: CVOut1
+      name: Pitch
+      type: cv
+      description: "Calibrated 1V/oct pitch. The root of the scale is 0V, so an oscillator sitting at its own zero is already in tune. It follows everything the internal voice does - the fine tune, the vibrato, the octave jump, and the glide during a legato slur, which slides rather than stepping. The two are computed from the same numbers precisely so they cannot disagree."
+    - id: CVOut2
+      name: Breath
+      type: cv
+      description: The breath envelope as a control voltage, 0 to 5V, after the curve and after the chiff dip - so it carries the articulation as well as the level. The obvious patch is into a filter so something else in the rack opens as you blow.
+    - id: AudioOut1
+      name: Flute
+      type: audio
+      description: The instrument. A jet-driven waveguide - delay line, nonlinear jet, reflection filter, DC blocker - running at 48kHz in fixed point. Range is C2 to D#5, which is where the model stays honest; above that the bore abandons its fundamental for the octave, so the card does not go there.
+    - id: AudioOut2
+      name: Breath noise
+      type: audio
+      description: The breath-noise component alone, taken before the bore, including the chiff bursts. Nearly free to produce since the noise is already computed for the jet, and genuinely useful patched - a breath-controlled noise source that tracks the performance exactly. Mix it back with Audio Out 1 to thicken the tone, or send it alone into a filter or a reverb for air and room.
+    - id: PulseOut1
+      name: Gate
+      type: pulse
+      description: High for as long as the instrument is sounding - that is, whenever breath is above the silence threshold. Goes low when you stop blowing or hold the chiff stop, so it is a genuine note-length gate rather than a trigger.
+    - id: PulseOut2
+      name: Tongue
+      type: pulse
+      description: A short blip on every articulated note, so envelopes elsewhere can be struck in time with the card's own articulation. Silent in legato, and rate-limited during very fast trills for the same reason the chiff is - a chiff per note at trill speed is a stutter, not a trill.
+
+controls:
+  switch:
+    up:
+      name: Legato
+      description: "Glide between notes instead of stepping, with a gentle vibrato of about fifteen cents at five hertz. No chiff. This is the trill mode - under tongued articulation a fast trill fires a chiff per note and becomes a stutter, whereas legato slides between the two pitches, which is what a trill actually sounds like on a wind instrument. HOLD for one second to see how close the last calibration came to fifteen combinations; keep holding to three seconds to enter tuning."
+    middle:
+      name: Tongued
+      description: Every new fingering starts with a chiff - a short burst of extra noise and a momentary dip in the air, which is physically what a tongue stroke does. This is what makes repeated notes articulate rather than smear into one another. There is a minimum interval between chiffs, so ordinary playing articulates every note while a deliberate trill smooths into a single gesture.
+    down:
+      name: Chiff stop / Calibrate
+      description: "Momentary mute, and a real stop rather than a gate close - it cuts the air AND damps the bore, so the sound ends in about fifty milliseconds instead of ringing out. Use it to cut a phrase or play hard staccato; releasing it re-attacks cleanly. HOLD for two seconds to calibrate, from anywhere including mid-announcement, which matters because hunting for a fifteen-combination calibration means doing it repeatedly. How it ends is on the LEDs: LEDs fading with both bottom lights blinking three times means all fifteen are usable; a four-LED bar with one long blink means it fell back to ten and the bar says how close it came; the two COLUMNS alternating fast means it FAILED, which in practice means nothing is patched into CV In 1 - the previous calibration is kept either way."
+    tap:
+      name: Capture / Leave tune
+      description: During calibration, captures the combination you are holding - a tap while the voltage is still moving is rejected with a flash rather than silently recording a mid-slew reading. In tuning, leaves and keeps whatever offsets you have set. In normal play it does nothing, since the chiff stop is the momentary action and re-articulation lives on Pulse In 1.
+  knobs:
+    -
+      main:
+        name: Breath
+        description: "How hard you are blowing, and the card's only way to be silent - below about seven percent of travel the instrument does not sound at all. The response is squared rather than linear, which spreads the interesting region out instead of cramming onset and the register boundary into the first third of the sweep. The octave jump sits around seventy percent, with a hysteresis band so it cannot flutter at the boundary. In TUNING this becomes fine tune, plus or minus one hundred cents."
+      x:
+        name: Timbre
+        description: Sweeps the bore's damping and its breath noise together, so the whole travel is musically useful rather than one parameter being interesting and the other being noise. Fully anticlockwise is dark and very breathy - wooden, airy, close to the edge of speaking. Fully clockwise is bright and focused with almost no noise. The loop gain is deliberately NOT on this knob - it is the one parameter that can make the resonator either dead or self-oscillating.
+      y:
+        name: Scale
+        description: "One of twelve scales, ordered dark to bright from fully anticlockwise, shown as a bar on the LEDs while you turn it: Phrygian, Hirajoshi, Harmonic Minor, Natural Minor, Minor Pentatonic, m7 Arpeggio, Dorian, Major Pentatonic, Ionian (Major), Maj7 Arpeggio, Whole Tone, Chromatic. Because the combinations are DEGREES rather than pitches, the scale also sets the range - a four-note arpeggio spreads them over three octaves while Chromatic packs them into just over one. The two arpeggios are wider than the bore can reach, so their top degree or two repeat the highest note rather than going out of tune. In TUNING this becomes coarse tune, plus or minus twelve semitones."
+  leds:
+    -
+      display: list
+      items:
+        - id: LED0-3
+          description: "In play, the fingering you are holding - the 2x2 block is laid out like the Four Voltages buttons, so the panel mirrors your fingers. During calibration, the combination to hold next, blinking, with already-visited buttons glowing dimly. After a fall back to ten, a four-LED bar showing how close the patch came to fifteen. In tuning, a single LED circling the block so the mode is unmistakable."
+        - id: LED4
+          description: "In play, a breath meter. During calibration, part of the phase marker - lit for singles, lit with LED 5 for triples, blinking fast with it for all four, so more light means more fingers. In tuning, how far the coarse offset is from zero, and dark when there is no offset at all."
+        - id: LED5
+          description: "In play, the mode indicator - dimly lit means all fifteen combinations are live, dark means ten. This is the one thing worth knowing mid-performance, because it tells you whether a third finger does anything. During calibration it marks pairs, and in tuning it shows the fine offset."
