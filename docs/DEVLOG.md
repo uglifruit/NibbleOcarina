@@ -5,11 +5,128 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v2.0.0 — the voice was rebuilt, because v1's was broken
+
+First hardware session. Two symptoms, reported by ear:
+
+> That's super super metallic sounding — and the main knob CCW never gets even
+> close to silent.
+
+Both came from **one line**, and it is the most instructive bug in the project.
+
+### The jet drove itself
+
+The waveguide's jet excitation was:
+
+```cpp
+const int32_t x = offset + noise - ((jetTap * kJetFeedbackQ12) >> 12);
+```
+
+`offset` and `noise` both scaled with breath. **The feedback term did not.** So
+with the knob at zero the bore's own returning pressure still drove the
+nonlinearity — measured, the jet was still injecting 1919 into a bore that was
+supposed to be silent. The instrument played itself.
+
+Everything followed from that:
+
+| Symptom | Measurement |
+|---|---|
+| never silent | jet output 1919 at breath = 0 |
+| knob does nothing | 2205 → 2697 → 1742 rms across the whole travel — 1.2:1, and *quieter* at the top |
+| metallic | h2 = 1.14× the fundamental, h5 = 0.64, h8 = 0.41 |
+| wrong octave above MIDI 60 | at MIDI 72 the second harmonic was 2.4× the first |
+
+### The tuning constant had absorbed the bug
+
+`kLoopFactorNum/Den = 1.5` was derived by measuring `f × delay` on the running
+system — but that system's pitch was being set by the runaway nonlinearity, not
+by the bore. Measured on the **linear resonator alone**, with the jet
+disconnected, the factor is exactly **2.0**, which is textbook for an inverting
+reflection.
+
+So a constant that looked like careful empiricism was actually a fitted
+artefact of a broken loop, and it had been documented at length as if it were
+physics. That is the trap: v1's DEVLOG entry for it is confident, detailed, and
+wrong.
+
+### The jet could not be saved
+
+Every repair attempt is recorded because each one looks reasonable and none
+worked:
+
+- gate the jet output with breath → pitch collapsed to 0.27×, 2.15×, 8.02×
+- gate the *coupling* term instead → same, plus instability
+- shorten the jet tap so it perturbs rather than resonates → loop factor fell
+  toward 0.1, i.e. oscillating on a high harmonic
+- re-damp to kill the competing modes → fundamental correct only at some delay
+  lengths, chaotic at others
+
+The reason is structural: the nonlinear path and the bore **compete** to set the
+frequency, and the nonlinear path keeps winning. A jet model needs the loop gain
+around the nonlinearity to sit in a narrow window that depends on pitch, damping
+and drive simultaneously — and nothing in the design was holding it there.
+
+### What replaced it
+
+A tuned oscillator, a noise generator, a resonant lowpass standing in for the
+body, and a VCA — all feed-forward. Nothing feeds back into the nonlinearity, so
+it can only *colour* a pitch that is already exact.
+
+| | v1 waveguide | v2 voice |
+|---|---|---|
+| tuning | 30–170 cents (variants) | **0.92 cents** |
+| silence at zero breath | never | **exactly 0** |
+| dynamic range | 1.2:1 | **98:1** |
+| h2 / h1 | 1.14 | **0.016** |
+| loudest partial vs octave | 0.41× at MIDI 72 | **19× everywhere** |
+| range | MIDI 36–75 | **MIDI 36–91** |
+| RAM | 8.35% | 7.48% |
+
+The old MIDI 75 ceiling was itself an artefact — above it the waveguide lost its
+fundamental because the jet tap got too short. Nothing has to pick its own mode
+now, so the range extends nearly two octaves higher, and **every scale gets all
+fifteen degrees and a full octave of transpose**. The two arpeggios previously
+lost their top degrees and could not transpose at all.
+
+The honest cost: **this is no longer a physical model.** It is a synthesiser
+shaped to sound like one. `info.yaml` and `flute.h` both say so.
+
+### The models failed, and that is the real lesson
+
+Every v1 assertion passed. They tested tuning, stability, DC, harmonic presence
+— internals. None of them noticed that the instrument was **ignoring the breath
+knob**, because none of them ever varied breath and compared the result.
+
+One was worse than useless: `E(f0) > 0.20 * E(2f0)` passed a note whose octave
+was five times louder than its fundamental. It was written to allow the
+brightening a real flute has toward the top, and it allowed the note being
+wrong.
+
+`flutesim.py` is now written against **what a player would report**:
+
+```
+silence          zero breath must be EXACTLY zero out
+dynamic range    the knob must span at least 30:1
+monotonic        more breath must always mean more level
+brightness       more breath must also mean brighter
+character        X must move air content across an audible range
+fundamental      the note played must be the note asked for, loudest
+```
+
+Any one of those would have caught v1 before it was flashed. When a model and a
+pair of ears disagree, the ears are the specification.
+
+---
+
 ## v1.0.0 — first build
 
 The card exists, builds clean at ~4.8% flash / ~8.4% RAM, and every model
 passes. No hardware session yet, so nothing below has met a real Four Voltages
 module.
+
+**Everything in this section about the bore is superseded — see v2.0.0.** It is
+kept because the reasoning was careful and still wrong, which is worth being
+able to read.
 
 ---
 

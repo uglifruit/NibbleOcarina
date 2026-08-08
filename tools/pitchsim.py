@@ -17,12 +17,13 @@ import sys
 import os
 
 SR = 48000.0
-LO_NOTE, HI_NOTE = 36, 75
+LO_NOTE, HI_NOTE = 36, 91
 MV_PER_SEMI_Q8 = 21333
 MAX_ROOT = 12
 MAX_DEGREE = 15          # 15-mode uses degrees 0..14
-DELAY_MAX = 768          # flute.h kDelayMax; the buffer itself is 1024
-LOOP_FACTOR = 1.5        # pitch.h kLoopFactorNum/Den; see tools/flutesim.py
+# v1 held delay lengths here, for a waveguide. The voice is an oscillator
+# now, so the table holds phase INCREMENTS and the octave shift goes the other
+# way -- increments double where delays halved.
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -62,7 +63,7 @@ def cents(f_got, f_want):
 
 def load_table():
     src = open(os.path.join(ROOT, "pitch.cpp"), encoding="utf-8").read()
-    body = src[src.index("kDelayQ16Base[12]"):]
+    body = src[src.index("kIncQ32Base[12]"):]
     body = body[body.index("{"):body.index("};")]
     vals = [int(m) for m in re.findall(r"(\d+)u", body)]
     return vals
@@ -88,21 +89,22 @@ def load_scales():
 TABLE = load_table()
 
 
-def semi_to_delay_q16(semi):
+def semi_to_inc_q32(semi):
     semi = max(LO_NOTE, min(HI_NOTE, semi))
     n = semi - LO_NOTE
     oct_, st = n // 12, n % 12
-    return TABLE[st] >> oct_
+    return TABLE[st] << oct_
 
 
 CENT_Q24 = 9691
 
 
-def apply_fine_cents(d_q16, c):
+def apply_fine_cents(inc, c):
+    # Note the SIGN: sharpening RAISES an increment, where it shortened a delay.
     x = c * CENT_Q24
-    lin = (d_q16 * x) >> 24
-    quad = (((x * x) >> 24) * d_q16) >> 25
-    return d_q16 - lin + quad
+    lin = (inc * x) >> 24
+    quad = (((x * x) >> 24) * inc) >> 25
+    return inc + lin + quad
 
 
 def semis_to_mv(semi):
@@ -125,21 +127,23 @@ def quantize_note(root, scale, degree):
 # Tests
 # ---------------------------------------------------------------------------
 
+def inc_to_hz(inc):
+    return inc * SR / 4294967296.0
+
+
 def test_table_exact():
-    print("delay table")
+    print("increment table")
     check("table has 12 entries", len(TABLE), 12)
-    worst = 0.0
-    worst_i = -1
+    worst, worst_i = 0.0, -1
     for i in range(12):
-        want = round(65536 * SR / (LOOP_FACTOR * midi_hz(LO_NOTE + i)))
+        want = round(midi_hz(LO_NOTE + i) * 4294967296.0 / SR)
         if TABLE[i] != want:
             check(f"entry {i} exact", TABLE[i], want)
-        got_f = 65536 * SR / (LOOP_FACTOR * TABLE[i])
-        e = abs(cents(got_f, midi_hz(LO_NOTE + i)))
+        e = abs(cents(inc_to_hz(TABLE[i]), midi_hz(LO_NOTE + i)))
         if e > worst:
             worst, worst_i = e, i
     check("every entry matches exact arithmetic",
-          all(TABLE[i] == round(65536 * SR / (LOOP_FACTOR * midi_hz(LO_NOTE + i)))
+          all(TABLE[i] == round(midi_hz(LO_NOTE + i) * 4294967296.0 / SR)
               for i in range(12)), True)
     print(f"        worst rounding error: {worst:.4f} cents (entry {worst_i})")
 
@@ -149,69 +153,56 @@ def test_octave_shift():
     print("octave shifting")
     worst, worst_n = 0.0, -1
     for n in range(LO_NOTE, HI_NOTE + 1):
-        d = semi_to_delay_q16(n) / 65536.0
-        f = SR / (LOOP_FACTOR * d)
-        e = abs(cents(f, midi_hz(n)))
+        e = abs(cents(inc_to_hz(semi_to_inc_q32(n)), midi_hz(n)))
         if e > worst:
             worst, worst_n = e, n
     print(f"        worst error over MIDI {LO_NOTE}..{HI_NOTE}: "
-          f"{worst:.3f} cents (note {worst_n})")
-    # A right shift discards fractional bits, and the highest octave has the
-    # fewest left, so error grows with pitch. Under 5 cents is inaudible in
-    # this context.
-    check_within("worst octave-shift error under 5 cents", worst, 0.0, 5.0, "c")
+          f"{worst:.4f} cents (note {worst_n})")
+    check_within("worst octave-shift error under 1 cent", worst, 0.0, 1.0, "c")
 
 
-def test_delay_fits_buffer():
-    """The lowest note must fit the delay line, with room for fine tune."""
-    print("buffer bounds")
-    d_lo = semi_to_delay_q16(LO_NOTE) / 65536.0
-    check(f"lowest note fits kDelayMax={DELAY_MAX} ({d_lo:.1f} samples)",
-          d_lo < DELAY_MAX, True)
-    # Fine tune bends FLAT, which makes the delay LONGER. -100 cents is the most
-    # it can, and that must still fit or the read pointer wraps into the future
-    # and the bore reads samples it has not written yet.
-    d_flat = apply_fine_cents(semi_to_delay_q16(LO_NOTE), -100) / 65536.0
-    check(f"...even 100 cents flat ({d_flat:.1f} samples)", d_flat < DELAY_MAX, True)
-    d_hi = semi_to_delay_q16(HI_NOTE) / 65536.0
-    print(f"        highest note: {d_hi:.1f} samples "
-          f"(jet tap at ~{d_hi/2:.1f})")
-    # Below ~20 samples the jet tap loses the resolution to place its phase,
-    # the fundamental collapses and the bore plays the octave instead. Measured
-    # in tools/flutesim.py, and the reason kPitchHiNote is 75 rather than 96.
-    check("highest note leaves a usable loop", d_hi > 40, True)
+def test_increment_fits():
+    """A phase increment must not overflow uint32_t, or the note wraps to a
+    wrong pitch instead of simply being too high."""
+    print("increment bounds")
+    top = semi_to_inc_q32(HI_NOTE)
+    top = apply_fine_cents(top, 100)          # sharpest fine tune too
+    print(f"        highest increment: {top} ({inc_to_hz(top):.1f}Hz)")
+    check("top note fits in uint32", top < 2**32, True)
+    # And it must stay under Nyquist, or the oscillator aliases.
+    check(f"top note is under Nyquist ({SR/2:.0f}Hz)",
+          inc_to_hz(top) < SR / 2, True)
 
 
 def test_fine_cents():
     print("fine tune")
     import math
     worst = 0.0
-    for n in (36, 60, 96):
-        d0 = semi_to_delay_q16(n)
+    for n in (36, 60, 91):
+        d0 = semi_to_inc_q32(n)
         for c in range(-100, 101, 5):
             d = apply_fine_cents(d0, c)
-            got = cents(SR / (d / 65536.0), SR / (d0 / 65536.0))
+            got = cents(inc_to_hz(d), inc_to_hz(d0))
             worst = max(worst, abs(got - c))
     print(f"        worst deviation from ideal: {worst:.3f} cents")
     check_within("linear approximation good to 0.5 cents", worst, 0.0, 0.5, "c")
 
     check("zero cents is a no-op",
-          apply_fine_cents(semi_to_delay_q16(60), 0), semi_to_delay_q16(60))
+          apply_fine_cents(semi_to_inc_q32(60), 0), semi_to_inc_q32(60))
 
 
 def test_cv_and_bore_agree():
     """THE cross-check: the two pitch paths must name the same note.
 
-    The bore is tuned by a delay length; CV Out 1 by a millivolt value. They
+    The voice is tuned by a phase increment; CV Out 1 by a millivolt value. They
     share no arithmetic. If they drift apart the card plays one pitch and tells
     the rack another, and nothing in the system would flag it.
     """
-    print("bore vs CV agreement")
+    print("voice vs CV agreement")
     worst, worst_at = 0.0, None
     for n in range(LO_NOTE, HI_NOTE + 1):
         for c in (-100, -37, 0, 37, 100):
-            f_bore = SR / (LOOP_FACTOR *
-                           (apply_fine_cents(semi_to_delay_q16(n), c) / 65536.0))
+            f_bore = inc_to_hz(apply_fine_cents(semi_to_inc_q32(n), c))
             # CV is 1V/oct referenced to the scale root at kBaseNote = 36 = 3V.
             mv = pitch_mv(n, c)
             f_cv = midi_hz(LO_NOTE) * 2 ** (mv / 1000.0)
@@ -302,7 +293,7 @@ def main():
     print("pitchsim — pitch path verification\n")
     test_table_exact()
     test_octave_shift()
-    test_delay_fits_buffer()
+    test_increment_fits()
     test_fine_cents()
     test_cv_and_bore_agree()
     test_no_cv_clipping()

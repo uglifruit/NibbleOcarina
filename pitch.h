@@ -25,109 +25,87 @@ namespace nib {
 /// tune has room to bend flat without running off the end.
 constexpr int kPitchLoNote = 36;
 
-/// The highest note the bore can sound: MIDI 75 (D#5, 622Hz).
+/// The highest note the voice will play: MIDI 91 (G6, 1568Hz).
 ///
-/// This is MEASURED, not chosen. tools/flutesim.py sweeps the range and reports
-/// the energy at the fundamental against the energy at its octave:
+/// v1 capped this at 75, and that limit was an artefact of the waveguide: above
+/// about MIDI 78 its jet tap fell under ~20 samples, the interpolator could no
+/// longer place the jet's phase, and the bore abandoned its fundamental for the
+/// octave — silently, while CV Out 1 kept reporting the fingered note.
 ///
-///     MIDI 36..75   E(f0)/E(2f0) from 1.70 down to 0.29   fundamental leads
-///     MIDI 78       0.08                                  fundamental gone
-///     MIDI 81+      0.01                                  purely the octave
-///
-/// The collapse is abrupt and it happens where the jet tap falls below about 20
-/// samples: the linear interpolator no longer has the resolution to place the
-/// jet's phase accurately, the first mode stops being favoured, and the bore
-/// jumps to its second. Past that point the card would play an octave above
-/// what CV Out 1 reports — silently.
-///
-/// The gradual fall from 1.70 to 0.29 across the usable range is not a defect:
-/// a real flute gets brighter and thinner toward the top too.
-constexpr int kPitchHiNote = 75;
+/// The voice is an oscillator now, so nothing has to pick its own mode and the
+/// ceiling is simply where the instrument stops being musical. tools/pitchsim.py
+/// confirms 2.3 cents worst case all the way up.
+constexpr int kPitchHiNote = 91;
 
 // ---------------------------------------------------------------------------
 // Semitone -> delay length
 // ---------------------------------------------------------------------------
 
-/// The bore's loop factor: one period takes 1.5 delay-line traversals.
+/// Oscillator phase increment for each semitone of the reference octave, Q32.
 ///
-/// This is the least obvious number in the card, and getting it wrong puts the
-/// entire instrument uniformly a perfect FOURTH sharp — which sounds like a
-/// tuning-constant problem and is actually a geometry problem.
+/// Generated, not typed: entry i = round(f * 2^32 / 48000) for MIDI note
+/// (36 + i). A hand-written table here is one wrong note and nothing else,
+/// which is why tools/pitchsim.py re-derives every entry from exact arithmetic
+/// and asserts the error in cents.
 ///
-/// Why 1.5 and not 1 or 2: the jet tap sits at half the loop delay, and it is
-/// not a passive observer — it feeds the nonlinearity that drives the bore, so
-/// it forms a second path of half the length. The two paths together resonate
-/// with a period of 1.5 traversals, which tools/flutesim.py confirms directly:
-/// measured f * delay is a constant 32000 = 48000/1.5 across the whole range.
-///
-/// So: delay = SampleRate / (1.5 * f). Change the jet ratio and this changes
-/// with it — they are one mechanism, not two constants.
-constexpr int32_t kLoopFactorNum = 3;
-constexpr int32_t kLoopFactorDen = 2;
+/// v1 held delay LENGTHS here instead, because the voice was a waveguide. Note
+/// the direction flipped with it: increment DOUBLES per octave where delay
+/// halved, so the octave is a left shift now rather than a right one.
+extern const uint32_t kIncQ32Base[12];
 
-/// Loop delay in SAMPLES for each semitone of the reference octave, Q16.
+/// MIDI semitone -> phase increment, Q32. No divide, no exp, no 64-bit.
 ///
-/// Generated, not typed: entry i = round(65536 * 48000 / (1.5 * f)), where f is
-/// the frequency of MIDI note (36 + i). A hand-written table here is one wrong
-/// note and nothing else, which is why tools/pitchsim.py re-derives every entry
-/// from exact arithmetic and asserts the error in cents.
-extern const uint32_t kDelayQ16Base[12];
-
-/// MIDI semitone -> loop delay in samples, Q16. No divide, no exp, no 64-bit.
-///
-/// The delay HALVES exactly per octave, so the octave is a right shift and only
-/// the twelve within-octave ratios need a table. One lookup, one shift.
+/// The increment DOUBLES exactly per octave, so the octave is a left shift and
+/// only the twelve within-octave ratios need a table. One lookup, one shift.
 ///
 /// On `n / 12`: dividing a small non-negative int by a compile-time constant is
 /// strength-reduced by gcc into a multiply-and-shift. It is NOT a libgcc call.
 /// The thing that must be avoided on this chip is 64-bit division, which has no
 /// hardware support and was the single biggest cause of NIBBLE overrunning its
 /// sample budget — not all division everywhere. See fastmath.h's kHzToIncQ16.
-static inline uint32_t SemiToDelayQ16(int semi)
+static inline uint32_t SemiToIncQ32(int semi)
 {
 	if (semi < kPitchLoNote) semi = kPitchLoNote;
 	if (semi > kPitchHiNote) semi = kPitchHiNote;
 	const int n   = semi - kPitchLoNote;
 	const int oct = n / 12;
 	const int st  = n - oct * 12;
-	return kDelayQ16Base[st] >> oct;
+	return kIncQ32Base[st] << oct;
 }
 
 /// ln(2)/1200 in Q24 — the per-cent exponent for the fine-tune ratio.
 constexpr int32_t kCentQ24 = 9691;
 
-/// Bend a Q16 delay by a fine-tune offset in cents.
+/// Bend a Q32 phase increment by a fine-tune offset in cents.
 ///
-/// The exact ratio is 2^(-c/1200) = exp(-x) where x = c * ln2/1200.
+/// The exact ratio is 2^(c/1200) = exp(x) where x = c * ln2/1200. Note the
+/// SIGN: sharpening raises the increment, where in v1 it shortened a delay.
 ///
-/// A FIRST-ORDER expansion (1 - x) is not good enough here, and it is worth
+/// A FIRST-ORDER expansion (1 + x) is not good enough here, and it is worth
 /// recording why rather than rediscovering it: over the +/-100 cent range this
 /// card offers it is off by 3.1 cents at the extremes — small enough to look
 /// plausible, large enough to hear against a tuned oscillator, and it would
 /// have shown up as "the fine tune is slightly wrong at the ends" forever.
-/// tools/pitchsim.py measured it.
 ///
-/// The second-order term (1 - x + x^2/2) brings the worst case to 0.058 cents,
-/// which is inaudible, for one extra multiply and shift.
+/// The second-order term (1 + x + x^2/2) brings the worst case under 0.1 cents
+/// for one extra multiply and shift.
 ///
 /// The 64-bit multiplies here are fine (~10 cycles each). This runs at control
 /// rate on a note change, never per sample. A 64-bit DIVIDE would not be.
-static inline uint32_t ApplyFineCents(uint32_t dQ16, int32_t cents)
+static inline uint32_t ApplyFineCents(uint32_t incQ32, int32_t cents)
 {
-	const int32_t d = static_cast<int32_t>(dQ16);
+	const uint32_t v = incQ32;
 
-	// x = cents * ln2/1200, in Q24.
+	// x = cents * ln2/1200, in Q24. Signed: negative cents flatten.
 	const int32_t xQ24 = cents * kCentQ24;
 
-	// first order: d * x
 	const int32_t lin = static_cast<int32_t>(
-		(static_cast<int64_t>(d) * xQ24) >> 24);
+		(static_cast<int64_t>(v) * xQ24) >> 24);
 
-	// second order: d * x^2 / 2
 	const int32_t quad = static_cast<int32_t>(
-		(((static_cast<int64_t>(xQ24) * xQ24) >> 24) * d) >> 25);
+		(((static_cast<int64_t>(xQ24) * xQ24) >> 24) * static_cast<int64_t>(v)) >> 25);
 
-	return static_cast<uint32_t>(d - lin + quad);
+	return static_cast<uint32_t>(static_cast<int64_t>(v) + lin + quad);
 }
 
 // ---------------------------------------------------------------------------
@@ -136,49 +114,24 @@ static inline uint32_t ApplyFineCents(uint32_t dQ16, int32_t cents)
 
 /// How far the root may be transposed, PER SCALE, in semitones.
 ///
-/// The bore spans MIDI 36..75 — 39 semitones — and the scales do not all fit
-/// the same way. Fifteen degrees of a 7-note mode covers 24 semitones and
-/// leaves an octave of headroom; fifteen degrees of a 4-note arpeggio covers
-/// 43 and does not fit at all.
+/// Every scale now gets the full octave, and every scale reaches all fifteen
+/// degrees — see kUsableDegrees. That was NOT true in v1: the waveguide only
+/// spanned MIDI 36..75, and fifteen degrees of a 4-note arpeggio covers 43
+/// semitones, so the two arpeggios lost their top degrees and could not be
+/// transposed at all.
 ///
-/// A single global kMaxRoot cannot express that. Using one means either the
-/// narrow scales lose transposition they could have had, or the wide ones run
-/// off the top of the bore — and running off the top is SILENT: the delay
-/// clamps while CV Out 1 keeps climbing, so the card plays one note and tells
-/// the rack another. That is the worst failure mode available here, which is
-/// why the limit is per-scale and why tools/pitchsim.py asserts it.
-///
-/// Generated by the same arithmetic pitchsim uses:
-///   maxRoot[s] = clamp(kPitchHiNote - kPitchLoNote - span(s), 0, 12)
-/// where span(s) is degree 14 minus degree 0 for that scale.
-///
-/// The two arpeggios get 0: they already fill the bore and then some. They also
-/// lose their top degree or two to the clamp in DegreesFor() below — an honest
-/// two fingerings out of fifteen on two scales out of twelve, and the
-/// alternative was dropping the most dramatic scales on the card.
+/// The table is kept rather than collapsed to a single constant because the
+/// constraint is real and will bite again the moment kPitchHiNote moves or a
+/// wider scale is added. The failure it guards against is SILENT: past the top
+/// note the pitch clamps while CV Out 1 keeps climbing, so the card plays one
+/// note and tells the rack another. tools/pitchsim.py asserts it every run.
 constexpr uint8_t kMaxRootFor[12] = {
-	12,   //  0 Phrygian        span 24
-	 7,   //  1 Hirajoshi       span 32
-	12,   //  2 Harmonic Minor  span 24
-	12,   //  3 Natural Minor   span 24
-	 5,   //  4 Minor Pentatonic span 34
-	 0,   //  5 m7 Arpeggio     span 43 — wider than the bore
-	12,   //  6 Dorian          span 24
-	 6,   //  7 Major Pentatonic span 33
-	12,   //  8 Ionian          span 24
-	 3,   //  9 Maj7 Arpeggio   span 43 — but only 13 degrees fit, freeing 3
-	11,   // 10 Whole Tone      span 28
-	12,   // 11 Chromatic       span 14
+	12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12
 };
 
-/// How many of the fifteen degrees a scale can actually reach.
-///
-/// Fourteen for the m7 arpeggio and thirteen for the Maj7; fifteen for
-/// everything else. Degrees past the end repeat the top note rather than
-/// climbing past the bore, so the highest fingerings double up instead of
-/// going silently out of tune.
+/// How many of the fifteen degrees each scale can reach. All of them, now.
 constexpr uint8_t kUsableDegrees[12] = {
-	15, 15, 15, 15, 15, 14, 15, 15, 15, 13, 15, 15
+	15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15
 };
 
 // ---------------------------------------------------------------------------

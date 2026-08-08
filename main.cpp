@@ -1,5 +1,5 @@
-// NIBBLE OCARINA — a physically-modelled wind instrument for the
-// Music Thing Modular Workshop Computer.
+// NIBBLE OCARINA — a wind instrument for the Music Thing Modular Workshop
+// Computer.
 //
 // Fingering comes from the Workshop System's Four Voltages module: one cable
 // into CV In 1 carries all four buttons. The Main knob is breath. The card is
@@ -14,8 +14,8 @@
 //   CV In 2      breath CV, adds to the knob
 //   Pulse In 1   tongue: re-articulates the current note
 //
-//   Main         breath                    (fine tune in TUNE)
-//   X            timbre
+//   Main         breath: level, brightness (fine tune in TUNE)
+//   X            character: breathy -> pure
 //   Y            scale                     (coarse tune in TUNE)
 //
 //   Switch UP    legato: glide + vibrato   UP held 1s  -> show the minGap bar
@@ -34,7 +34,7 @@
 // ---------------------------------------------------------------------------
 //
 // ProcessSample() runs at 48kHz inside a DMA interrupt, against a 4000-cycle
-// budget. It does the bore and nothing else expensive; everything that can wait
+// budget. It does the voice and nothing else expensive; everything that can wait
 // runs on one of two staggered control ticks at 3kHz, so no single sample pays
 // for both.
 
@@ -159,9 +159,9 @@ public:
 	void Setup()
 	{
 		levels_.InitDefault();
-		bore_.Init(0xC0FFEEu);
+		voice_.Init(0xC0FFEEu);
 		breath_.Init();
-		bore_.SetTimbre(kDampDefaultQ15, 3000);
+		ApplyTimbre();
 	}
 
 	virtual void __not_in_flash_func(ProcessSample)() override
@@ -204,14 +204,14 @@ public:
 		// --- audio ---------------------------------------------------------
 		const int32_t air = (ui_ == UiMode::Tune) ? kDroneBreath
 		                                          : breath_.BreathQ12();
-		const int32_t v = bore_.Step(air);
+		const int32_t v = voice_.Step(air);
 
 		AudioOut1(clamp12(v >> 2));
 
 		// Audio Out 2: the breath-noise component alone. Nearly free — the
 		// noise is already computed for the jet — and genuinely useful patched:
 		// a breath-controlled noise source that tracks the performance.
-		AudioOut2(clamp12(bore_.LastNoise() >> 1));
+		AudioOut2(clamp12(voice_.LastNoise() >> 1));
 
 		// --- pulse outs ----------------------------------------------------
 		PulseOut1(air > 0);
@@ -256,7 +256,7 @@ private:
 		{
 			stopLast_ = stopped;
 			breath_.SetStopped(stopped);
-			if (stopped) bore_.Mute(); else bore_.Unmute();
+			if (stopped) voice_.Mute(); else voice_.Unmute();
 		}
 
 		// Pulse In 1 re-articulates without changing the fingering.
@@ -279,7 +279,7 @@ private:
 		}
 
 		ReadScale();
-		ReadTimbre(chiff);
+		ApplyTimbre();
 		UpdatePitch();
 		UpdateCVs();
 	}
@@ -375,31 +375,27 @@ private:
 		}
 	}
 
-	/// X sweeps damping and noise together, so the whole travel is musically
-	/// useful rather than one parameter being interesting and the other noise.
-	/// Damping is brightness; noise is breathiness.
+	/// Push the current breath and X knob into the voice.
 	///
-	/// Re-sent whenever X moves OR while a chiff is decaying, since the chiff
-	/// rides on top of the standing noise amount and has to be re-applied as it
-	/// falls. `chiffing` is passed in rather than read from Breath because
-	/// Tick() has already consumed the edge by this point — see ControlTick().
-	void __not_in_flash_func(ReadTimbre)(bool chiffing)
+	/// Both knobs feed all four voice parameters, which is what makes them
+	/// interact rather than sit in separate lanes: breath sets loudness AND
+	/// brightness AND harmonic richness, while X decides how airy the whole
+	/// range is. Soft playing at X fully CCW is nearly all breath; hard
+	/// playing at X fully CW is a clear, strong tone.
+	///
+	/// Cheap enough to run every control tick — four multiplies — so unlike v1
+	/// there is no "has the knob moved" gate to get wrong. That gate was how
+	/// the chiff's extra noise went missing.
+	void __not_in_flash_func(ApplyTimbre)()
 	{
-		const int32_t x = KnobVal(Knob::X);
-		const bool moved = (x > timbreLast_ + 24 || x < timbreLast_ - 24);
-		if (moved) timbreLast_ = x;
-
-		// The chiff decays over ~12ms, so its noise must be re-sent every tick
-		// of the burst, not only on the tick it began.
-		if (!moved && !chiffing && breath_.ChiffNoiseQ15() == 0) return;
-
-		const int32_t damp = kDampMinQ15
-		                   + ((kDampMaxQ15 - kDampMinQ15) * timbreLast_ >> 12);
-		const int32_t noise = 8000 - ((6500 * timbreLast_) >> 12);
-		bore_.SetTimbre(damp, noise + breath_.ChiffNoiseQ15());
+		Timbre t = TimbreFor(breath_.BreathQ12(), KnobVal(Knob::X));
+		// The chiff rides on top of the standing air amount.
+		t.air += breath_.ChiffNoiseQ15() >> 3;
+		if (t.air > 4096) t.air = 4096;
+		voice_.SetTimbre(t.air, t.cut, t.res, t.drive);
 	}
 
-	/// combo -> degree -> semitone -> delay, and the CV to match.
+	/// combo -> degree -> semitone -> increment, and the CV to match.
 	void __not_in_flash_func(UpdatePitch)()
 	{
 		const int32_t vib = breath_.VibratoCents();
@@ -476,10 +472,10 @@ private:
 		const int32_t glideSemi  = glideSemiQ8_ >> 8;
 		const int32_t glideCents = ((glideSemiQ8_ - (glideSemi << 8)) * 100) >> 8;
 
-		uint32_t d = SemiToDelayQ16(glideSemi);
+		uint32_t inc = SemiToIncQ32(glideSemi);
 		const int32_t cents = fine_ + vib + glideCents;
-		if (cents) d = ApplyFineCents(d, cents);
-		bore_.SetDelayQ16(d);
+		if (cents) inc = ApplyFineCents(inc, cents);
+		voice_.SetIncQ32(inc);
 
 		// The CV comes from the same two numbers, so voice and CV cannot
 		// disagree during a slur.
@@ -660,9 +656,9 @@ private:
 		if (root < kPitchLoNote) root = kPitchLoNote;
 
 		const int32_t semi = QuantizeNote(root, scale_, 0);
-		uint32_t d = SemiToDelayQ16(semi);
-		if (fine_) d = ApplyFineCents(d, fine_);
-		bore_.SetDelayQ16(d);
+		uint32_t inc = SemiToIncQ32(semi);
+		if (fine_) inc = ApplyFineCents(inc, fine_);
+		voice_.SetIncQ32(inc);
 
 		// Keep the glide anchored here, so leaving TUNE does not slide from
 		// wherever the drone happened to be.
@@ -860,7 +856,7 @@ private:
 	// -----------------------------------------------------------------------
 
 	LevelTracker levels_;
-	Waveguide    bore_;
+	Flute        voice_;
 	Breath       breath_;
 
 	TuneKnob coarseKnob_, fineKnob_;
@@ -898,7 +894,6 @@ private:
 	int32_t coarse_ = 0;
 	int32_t fine_   = 0;
 
-	int32_t timbreLast_  = -999;
 	int32_t cvPitchLast_ = -99999;
 	int32_t cvEnvLast_   = -99999;
 	int32_t scaleShow_   = 0;

@@ -1,4 +1,4 @@
-// pitch.cpp — the delay-length table.
+// pitch.cpp — the oscillator increment table.
 //
 // Verified against exact arithmetic in tools/pitchsim.py. If you edit a value
 // here by hand, run that first: a mistyped entry is one note that is wrong and
@@ -9,27 +9,27 @@
 
 namespace nib {
 
-/// round(65536 * 48000 / (1.5 * f)) for MIDI notes 36..47 (C2..B2).
+/// round(f * 2^32 / 48000) for MIDI notes 36..47 (C2..B2).
 ///
-/// The 1.5 is not a fudge factor, it is the loop geometry — see kLoopFactorNum
-/// in pitch.h. Deriving it wrong puts the whole instrument a fourth sharp,
-/// uniformly, which is exactly what the first version of this table did.
+/// The reference octave is the LOWEST one, and the shift in SemiToIncQ32() goes
+/// LEFT, so the largest value the card ever uses is this table's top entry
+/// shifted up four octaves — about 1.4e8, comfortably inside uint32_t.
 ///
-/// __not_in_flash so the lookup in SemiToDelayQ16() cannot put an XIP read in
-/// a control tick. 48 bytes of RAM is a trivial price for that guarantee.
-const uint32_t __not_in_flash("delaytab") kDelayQ16Base[12] = {
-	32063411u,   // C2   65.406Hz -> 489.25 samples
-	30263830u,   // C#2  69.296Hz -> 461.79 samples
-	28565252u,   // D2   73.416Hz -> 435.87 samples
-	26962007u,   // D#2  77.782Hz -> 411.41 samples
-	25448746u,   // E2   82.407Hz -> 388.32 samples
-	24020418u,   // F2   87.307Hz -> 366.52 samples
-	22672255u,   // F#2  92.499Hz -> 345.95 samples
-	21399759u,   // G2   97.999Hz -> 326.53 samples
-	20198683u,   // G#2 103.826Hz -> 308.21 samples
-	19065018u,   // A2  110.000Hz -> 290.91 samples
-	17994981u,   // A#2 116.541Hz -> 274.58 samples
-	16985000u,   // B2  123.471Hz -> 259.17 samples
+/// __not_in_flash so the lookup cannot put an XIP read in a control tick. 48
+/// bytes of RAM is a trivial price for that guarantee.
+const uint32_t __not_in_flash("inctab") kIncQ32Base[12] = {
+	 5852465u,   // C2    65.406Hz
+	 6200470u,   // C#2   69.296Hz
+	 6569170u,   // D2    73.416Hz
+	 6959793u,   // D#2   77.782Hz
+	 7373644u,   // E2    82.407Hz
+	 7812103u,   // F2    87.307Hz
+	 8276635u,   // F#2   92.499Hz
+	 8768789u,   // G2    97.999Hz
+	 9290209u,   // G#2  103.826Hz
+	 9842633u,   // A2   110.000Hz
+	10427907u,   // A#2  116.541Hz
+	11047982u,   // B2   123.471Hz
 };
 
 } // namespace nib

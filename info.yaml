@@ -1,10 +1,10 @@
 draft: false
 Name: NIBBLE OCARINA
-short-description: Turns the Workshop System's four buttons into the finger holes of a physically-modelled flute you blow with a knob
+short-description: Turns the Workshop System's four buttons into the finger holes of a flute you blow with a knob
 Language: C++ (ComputerCard)
 Creator: Andy Jenkinson (uglifruit)
-Version: "1.0.0"
-Status: Untested on hardware
+Version: "2.0.0"
+Status: Released
 License: CC-BY-4.0
 repository: https://github.com/uglifruit/NibbleOcarina
 Editor: none
@@ -17,12 +17,11 @@ contact:
 
 uf2:
   - path: UF2/ocarina.uf2
-    name: NIBBLE OCARINA 1.0.0
+    name: NIBBLE OCARINA 2.0.0
 
 tags:
-  - physical-modelling
-  - waveguide
   - flute
+  - wind
   - wind-instrument
   - keyboard
   - scales
@@ -30,19 +29,20 @@ tags:
   - four-voltages
 
 summary: |
-  Turns the Workshop System's four buttons into the finger holes of a
-  physically-modelled flute.<br><br>
+  Turns the Workshop System's four buttons into the finger holes of a flute you
+  blow with a knob.<br><br>
 
   Patch one output of the FOUR VOLTAGES module into CV In 1, teach the card
   which voltage each button combination produces, and its buttons become
   fingerings. The Main knob is your breath - turn it up and the instrument
   speaks, turn it down and it stops. Blow hard and it jumps the octave.<br><br>
 
-  The voice is a real waveguide, not a sample and not a filtered oscillator - a
-  delay line, a nonlinear jet excitation, a reflection filter and a DC blocker,
-  all in fixed point. It is in tune to about four cents across its range, and it
-  gets brighter and thinner toward the top the way a real flute does, because
-  the model does that on its own.<br><br>
+  Blowing harder is louder, brighter and richer all at once, so the Main knob is
+  a real dynamics control rather than a volume fader. X decides how airy the
+  whole range is, from a soft breathy whisper to a clear focused tone, and the
+  two multiply: soft playing with X anticlockwise is nearly all breath, hard
+  playing with X clockwise is a strong clear tone. In tune to under a cent
+  across three and a half octaves.<br><br>
 
   SETUP - patch one Four Voltages output into CV In 1. That is the whole
   required patch. Calibration starts by itself at power-on - hold each
@@ -82,11 +82,16 @@ summary: |
   already are, so entering tune never jumps the pitch. Nothing is saved to flash
   - not the tuning and not the calibration.<br><br>
 
-  ON OVERBLOWING - the octave jump is deliberate rather than emergent, and it is
-  worth saying so. A cubic jet nonlinearity brightens the tone as you blow
-  harder but does not, on its own, flip which mode the bore prefers - measured,
-  not assumed. So hard breath adds an octave explicitly, with a hysteresis band
-  so the boundary cannot flutter. It sounds the same and it always works.
+  ON HONESTY - v1 of this card was a jet-driven waveguide, a genuine physical
+  model. It had a bug: the jet's feedback term did not depend on breath, so the
+  bore drove itself, the card never went silent, the knob spanned barely any
+  loudness at all and the runaway saturated into a metallic spectrum. The jet
+  could not be repaired without it choosing its own pitch, so it was replaced.
+  What is here now is an oscillator, filtered noise, a resonant body and a
+  breath VCA - a synthesiser shaped to sound like a flute rather than a
+  simulation of one. The octave jump is likewise explicit rather than emergent.
+  It sounds like a wind instrument and it always plays in tune, which matters
+  more than the label.
 
 panel:
   inputs:
@@ -118,11 +123,11 @@ panel:
     - id: AudioOut1
       name: Flute
       type: audio
-      description: The instrument. A jet-driven waveguide - delay line, nonlinear jet, reflection filter, DC blocker - running at 48kHz in fixed point. Range is C2 to D#5, which is where the model stays honest; above that the bore abandons its fundamental for the octave, so the card does not go there.
+      description: The instrument. A tuned oscillator through a soft saturator, mixed with filtered breath noise, shaped by a resonant lowpass standing in for the bore and scaled by a breath VCA - all at 48kHz in fixed point. Range is C2 to G6, three and a half octaves, in tune to under a cent throughout.
     - id: AudioOut2
       name: Breath noise
       type: audio
-      description: The breath-noise component alone, taken before the bore, including the chiff bursts. Nearly free to produce since the noise is already computed for the jet, and genuinely useful patched - a breath-controlled noise source that tracks the performance exactly. Mix it back with Audio Out 1 to thicken the tone, or send it alone into a filter or a reverb for air and room.
+      description: The breath-noise component alone, before it reaches the bore filter, including the chiff bursts. Nearly free to produce since the noise is already computed for the voice, and genuinely useful patched - a breath-controlled noise source that tracks the performance exactly. Mix it back with Audio Out 1 to thicken the tone, or send it alone into a filter or a reverb for air and room.
     - id: PulseOut1
       name: Gate
       type: pulse
@@ -150,10 +155,10 @@ controls:
     -
       main:
         name: Breath
-        description: "How hard you are blowing, and the card's only way to be silent - below about seven percent of travel the instrument does not sound at all. The response is squared rather than linear, which spreads the interesting region out instead of cramming onset and the register boundary into the first third of the sweep. The octave jump sits around seventy percent, with a hysteresis band so it cannot flutter at the boundary. In TUNING this becomes fine tune, plus or minus one hundred cents."
+        description: "How hard you are blowing, and the card's only way to be silent - below about seven percent of travel the instrument does not sound at all. It is a real dynamics control, not a volume fader: blowing harder makes the tone louder AND brighter AND richer together, spanning nearly a hundred to one in level. The response is squared rather than linear, which spreads the interesting region out instead of cramming it into the first third of the sweep. The octave jump sits around seventy percent, with a hysteresis band so it cannot flutter. In TUNING this becomes fine tune, plus or minus one hundred cents."
       x:
         name: Timbre
-        description: Sweeps the bore's damping and its breath noise together, so the whole travel is musically useful rather than one parameter being interesting and the other being noise. Fully anticlockwise is dark and very breathy - wooden, airy, close to the edge of speaking. Fully clockwise is bright and focused with almost no noise. The loop gain is deliberately NOT on this knob - it is the one parameter that can make the resonator either dead or self-oscillating.
+        description: How airy the tone is, and it works WITH the breath knob rather than beside it. Fully anticlockwise is soft and very breathy - airy, wooden, half air by energy. Fully clockwise is pure and focused with the noise almost gone. Because breath also thins the air out as you lean in, soft playing at the anticlockwise end is nearly all breath while hard playing at the clockwise end is a strong clear tone. The useful range is narrower than it looks and the knob is scaled to sit inside it - a linear sweep of the underlying parameter would waste three quarters of the travel on no audible change.
       y:
         name: Scale
         description: "One of twelve scales, ordered dark to bright from fully anticlockwise, shown as a bar on the LEDs while you turn it: Phrygian, Hirajoshi, Harmonic Minor, Natural Minor, Minor Pentatonic, m7 Arpeggio, Dorian, Major Pentatonic, Ionian (Major), Maj7 Arpeggio, Whole Tone, Chromatic. Because the combinations are DEGREES rather than pitches, the scale also sets the range - a four-note arpeggio spreads them over three octaves while Chromatic packs them into just over one. The two arpeggios are wider than the bore can reach, so their top degree or two repeat the highest note rather than going out of tune. In TUNING this becomes coarse tune, plus or minus twelve semitones."

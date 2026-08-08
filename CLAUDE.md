@@ -1,8 +1,11 @@
 # NIBBLE OCARINA — working notes
 
-A physically-modelled wind instrument for the Music Thing Workshop Computer.
-Sibling of NIBBLE (`../WoskshopButtons`, note the typo in that folder name) and
-WorkshopBio.
+A wind instrument for the Music Thing Workshop Computer. Sibling of NIBBLE
+(`../WoskshopButtons`, note the typo in that folder name) and WorkshopBio.
+
+It was a physical model in v1 and is not one now — see "The voice" below. The
+README still calls it a flute, which it sounds like; the source does not claim
+physics it no longer does.
 
 Read this before changing anything. Most of it is the record of something that
 was got wrong first.
@@ -80,8 +83,8 @@ gone, because it worked only by virtue of releases being silent.
 ```
 main.cpp     boot, control dispatch, calibration, tuning, LEDs, routing
 levels.*     Four Voltages -> combo index. 15/10 adaptive. No ghost rule.
-pitch.*      combo -> degree -> semitone -> delay length AND millivolts
-flute.*      the bore: delay line, jet nonlinearity, reflection, DC blocker
+pitch.*      combo -> degree -> semitone -> phase increment AND millivolts
+flute.*      the voice: oscillator, saturator, noise, bore filter, VCA
 breath.*     the air, articulation, chiff, the register switch
 ocarina.h    shared vocabulary and every tolerance
 ```
@@ -92,38 +95,48 @@ sample pays for both.
 
 ---
 
-## The bore, and what it does not do
+## The voice, and what it is not
 
-**Overblowing is EXPLICIT, not emergent.** The original design assumed a cubic
-jet nonlinearity would flip the register as breath rose. Measured in
-`tools/flutesim.py`, it does not: driving the jet harder shifts the harmonic
-balance but not which mode the loop prefers. Forcing it — jet gain vs breath,
-jet delay vs breath, operating point vs breath — gave non-harmonic modes at
-2.23× and 27× the fundamental. Those are chaos, not registers.
+**This is NOT a physical model, and the header says so.** v1 was a jet-driven
+waveguide. It shipped with a bug that made every symptom the first hardware
+session reported, and the bug could not be fixed without removing the jet.
 
-So hard blowing adds an octave in `breath.cpp`, with hysteresis. No player can
-tell; this file can.
+The jet's feedback term had **no breath in it**, so at zero breath the bore's
+own pressure kept driving the nonlinearity — measured, still injecting 1919 into
+a bore that was meant to be silent. The instrument played itself. That single
+line produced: never silent, a breath knob spanning 1.2:1 in loudness (and
+getting *quieter* at the top), a spectrum with h2 louder than the fundamental,
+and an octave that took over above MIDI 60.
 
-**The reflection INVERTS.** An open pipe end is a pressure node. Two inversions
-per round trip give all harmonics, which is what a flute has. The
-non-inverting version is a *closed* pipe: the second harmonic measured exactly
-zero at every breath level, and no jet tuning could ever have produced an
-octave. This is the sort of sign someone flips "to fix a tuning problem", and it
-silently changes the instrument.
+Worse, `kLoopFactor = 1.5` had been *measured on that broken system*, so the
+tuning constant absorbed the bug and hid it. On the linear resonator alone the
+factor is exactly 2.0.
 
-**The loop period is 1.5 delay traversals**, not 1. The jet tap is not a passive
-observer — it feeds the nonlinearity, forming a second path of half the length.
-Measured `f × delay` is a constant 32000 = 48000/1.5. Assuming 1 puts the whole
-instrument a uniform perfect fourth sharp, which reads as a bad tuning constant
-and is actually a geometry error. If the jet ratio changes, this changes with
-it, and `kDelayQ16Base` must be regenerated.
+Four separate repairs were tried — gating the jet output, gating the coupling,
+shortening the jet tap, re-damping — and each left the loop oscillating at
+0.27x, 2.1x, 5x or 8x the intended pitch. The nonlinear path and the bore
+compete to set the frequency and the nonlinear path wins. See docs/DEVLOG.md.
 
-**Range is MIDI 36..75, and that is measured.** Above ~78 the jet tap falls
-under about 20 samples, the interpolator can no longer place its phase, and the
-bore abandons its fundamental for the octave — silently, while CV Out 1 keeps
-reporting the note you fingered.
+What is there now is feed-forward: oscillator, noise, resonant lowpass, VCA.
+Nothing feeds back into the nonlinearity, so it can only colour a pitch that is
+already exact. **If you are tempted to reintroduce a feedback path for
+authenticity, read the devlog first.**
 
----
+**Breath and X both feed all four voice parameters.** That is deliberate and it
+is what makes them interact: breath sets loudness AND brightness AND harmonic
+richness, X sets how airy the whole range is. Two knobs in separate lanes felt
+like a volume control and a tone control; multiplied, they feel like an
+instrument.
+
+**The air range is narrow and high.** Measured: below air_mix 2400 the noise is
+inaudible under the tone, above 3800 the pitch disappears. A linear 0..4095
+sweep wastes three quarters of the knob, which is exactly what the first attempt
+at this mapping did.
+
+**The saturator needs a lot of drive to do anything.** The oscillator peaks at
+2047 and the curve turns over at 4096, so drive has to reach ~8000 in Q12 before
+the shape has any effect at all. A range of 3000..9000 looks generous and leaves
+the tone a pure sine throughout.
 
 ## The models are not optional
 
@@ -131,12 +144,23 @@ reporting the note you fingered.
 them — or delete them rather than let them drift into telling you a comfortable
 lie.**
 
-They caught, before any hardware: the loop-geometry error above; the reflection
-sign; a cents→millivolts constant that was 2/3 instead of 5/6 (a 19.5-cent
-detune that appears only once the fine tune is touched); a fine-tune
-approximation 3 cents out at full travel; a breath curve returning 4096 at full
-knob, one count past full scale; a DC blocker whose own truncation accumulated
-to a permanent −497 offset; and `kMaxRoot` derived from the wrong constraint.
+They caught, before any hardware: a cents→millivolts constant that was 2/3
+instead of 5/6 (a 19.5-cent detune that appears only once the fine tune is
+touched); a fine-tune approximation 3 cents out at full travel; a breath curve
+returning 4096 at full knob, one count past full scale; a DC blocker whose own
+truncation accumulated to a permanent −497 offset; and `kMaxRoot` derived from
+the wrong constraint.
+
+**And they missed the one that mattered.** Every v1 assertion passed while the
+voice ignored the breath knob entirely, because they all tested internals —
+tuning, stability, DC, harmonic presence — and none ever varied breath and
+compared the result. One was actively harmful: `E(f0) > 0.20 * E(2f0)` passed a
+note whose octave was five times louder than its fundamental.
+
+`flutesim.py` is now written against what a PLAYER would report: silence,
+dynamic range, monotonic loudness, brightness tracking breath, X moving
+character, and the played note being the note asked for. Write assertions that
+way. When a model and a pair of ears disagree, the ears are the specification.
 
 **What they cannot catch is the wiring.** Every module tested correct in
 isolation while `main.cpp` sequenced them wrongly: Pulse Out 2 could never fire
@@ -169,9 +193,9 @@ $env:PATH = "$env:USERPROFILE\.pico-sdk\cmake\v3.31.5\bin;$env:USERPROFILE\.pico
 cmake --build build
 ```
 
-Watch `--print-memory-usage` every link. Currently ~4.8% flash, ~8.4% RAM; a
-jump means something large landed in the wrong section. The 2KB delay line must
-be in RAM, not flash.
+Watch `--print-memory-usage` every link. Currently ~4.8% flash, ~7.5% RAM; a
+jump means something large landed in the wrong section. (v1 sat at 8.4% — the
+delay line went with the waveguide.)
 
 ---
 

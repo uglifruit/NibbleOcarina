@@ -10,10 +10,10 @@ buttons become the finger holes of a physically-modelled flute. The Main knob is
 your breath: turn it up and the instrument speaks, turn it down and it stops.
 Blow hard and it jumps the octave.
 
-The bore is a real waveguide — a delay line, a nonlinear jet, a reflection
-filter — not a sample and not a filtered oscillator. It is in tune to about four
-cents across its range, and it gets brighter and thinner toward the top the way
-a real flute does, because the model does that on its own.
+Blowing harder is louder, brighter and richer all at once, so the knob is a
+real dynamics control rather than a volume fader — and X decides how airy the
+whole range is, from a soft breathy whisper to a clear focused tone. It is in
+tune to under a cent across three and a half octaves.
 
 Sibling of [NIBBLE](https://github.com/uglifruit/WorkshopNibble), which turns the
 same four buttons into a keyboard and a drum machine.
@@ -43,8 +43,8 @@ knob** — hold the switch down for two seconds.
 | **CV In 1** | Four Voltages output — the fingering |
 | **CV In 2** | breath CV, adds to the knob |
 | **Pulse In 1** | tongue: re-articulates without changing the note |
-| **Main** | breath *(fine tune in TUNE)* |
-| **X** | timbre: breathy and dark → focused and bright |
+| **Main** | breath: loudness, brightness and richness together *(fine tune in TUNE)* |
+| **X** | character: breathy and soft → pure and focused |
 | **Y** | scale *(coarse tune in TUNE)* |
 | **Switch ↑** | legato: glide between notes, plus vibrato |
 | **Switch —** | tongued: a chiff on every note |
@@ -81,6 +81,12 @@ alternation. Up to about 16 waggles a second is clean.
 **Switch up is the trill mode.** Under tongued articulation every note gets a
 chiff, and a fast trill becomes a stutter. Legato glides between the two pitches
 instead, which is what a trill sounds like on a wind instrument.
+
+**The Main knob is the expression.** Barely blowing gives a quiet, dark, mostly
+breathy sound; leaning in makes it louder, brighter and more tonal together.
+**X** sets where that whole range sits — fully anticlockwise is airy and soft,
+fully clockwise is pure and focused. The two multiply, so soft playing at CCW is
+nearly all breath while hard playing at CW is a strong clear tone.
 
 **Blowing hard jumps the octave**, at about 70% of the knob's travel. There is a
 hysteresis band, so it will not flutter at the boundary.
@@ -202,30 +208,31 @@ already taken.
 
 ### Scales
 
-The bore plays MIDI 36..75 (C2 to D#5), so the widest scales lose a
-degree or two at the top and transpose less far. Everything below is
+The voice plays MIDI 36..91 (C2 to G6), so every scale reaches all
+fifteen degrees and transposes a full octave. Everything below is
 derived from `scales.h` and `pitch.h` — see `tools/caltable.py`.
 
 | Y | Scale | Notes/oct | Degrees | Transpose | Range (deg 0..top) |
 |--:|-------|----------:|--------:|----------:|--------------------|
 | 0 | Phrygian | 7 | 15/15 | +12 | C2–C4 |
-| 1 | Hirajoshi | 5 | 15/15 | +7 | C2–G#4 |
+| 1 | Hirajoshi | 5 | 15/15 | +12 | C2–G#4 |
 | 2 | Harmonic Minor | 7 | 15/15 | +12 | C2–C4 |
 | 3 | Natural Minor | 7 | 15/15 | +12 | C2–C4 |
-| 4 | Minor Pentatonic | 5 | 15/15 | +5 | C2–A#4 |
-| 5 | m7 Arpeggio | 4 | 14/15 | +0 | C2–D#5 |
+| 4 | Minor Pentatonic | 5 | 15/15 | +12 | C2–A#4 |
+| 5 | m7 Arpeggio | 4 | 15/15 | +12 | C2–G5 |
 | 6 | Dorian | 7 | 15/15 | +12 | C2–C4 |
-| 7 | Major Pentatonic | 5 | 15/15 | +6 | C2–A4 |
+| 7 | Major Pentatonic | 5 | 15/15 | +12 | C2–A4 |
 | 8 | Ionian (Major) | 7 | 15/15 | +12 | C2–C4 |
-| 9 | Maj7 Arpeggio | 4 | 13/15 | +3 | C2–C5 |
-| 10 | Whole Tone | 6 | 15/15 | +11 | C2–E4 |
+| 9 | Maj7 Arpeggio | 4 | 15/15 | +12 | C2–G5 |
+| 10 | Whole Tone | 6 | 15/15 | +12 | C2–E4 |
 | 11 | Chromatic | 12 | 15/15 | +12 | C2–D3 |
 
 <!-- END GENERATED -->
 
-Scales are ordered dark → bright, so the Y knob reads as one axis. The two
-arpeggios span more than the bore can reach, so their top degree or two repeat
-the highest note rather than going out of tune.
+Scales are ordered dark → bright, so the Y knob reads as one axis. Because the
+combinations are degrees rather than pitches, the scale also sets the range: a
+4-note arpeggio spreads fifteen fingerings over three and a half octaves, while
+Chromatic packs them into just over one.
 
 ---
 
@@ -271,10 +278,14 @@ python tools/caltable.py --check   # this README's tables match the source
 ```
 
 The Python models are line-by-line ports of the C++, and they earned their keep:
-between them they caught a wrong loop geometry that put the whole instrument a
-fourth sharp, a reflection sign that made the bore a closed pipe, a detune that
-only appeared once the fine tune was touched, and a breath curve that overflowed
-by one count at full travel.
+between them they caught a detune that appeared only once the fine tune was
+touched, a breath curve that overflowed by one count at full travel, and a DC
+blocker whose own rounding left a permanent offset.
+
+They also failed to catch the one that mattered — see `docs/DEVLOG.md`. The v1
+voice ignored the breath knob entirely and no assertion noticed, because they
+all tested internals rather than what a player would hear. `flutesim.py` is now
+written the other way round: silence, dynamic range, brightness, character.
 
 ---
 

@@ -149,9 +149,9 @@ def build():
 
     L.append("### Scales")
     L.append("")
-    L.append(f"The bore plays MIDI {lo}..{hi} "
-             f"({note_name(lo)} to {note_name(hi)}), so the widest scales lose a")
-    L.append("degree or two at the top and transpose less far. Everything below is")
+    L.append(f"The voice plays MIDI {lo}..{hi} "
+             f"({note_name(lo)} to {note_name(hi)}), so every scale reaches all")
+    L.append("fifteen degrees and transposes a full octave. Everything below is")
     L.append("derived from `scales.h` and `pitch.h` — see `tools/caltable.py`.")
     L.append("")
     L.append("| Y | Scale | Notes/oct | Degrees | Transpose | Range (deg 0..top) |")
