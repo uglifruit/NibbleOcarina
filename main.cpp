@@ -17,6 +17,7 @@
 //   Pulse In 1   tongue: re-articulates the current note
 //
 //   Main         level, then VIBRATO DEPTH   (FINE TUNE during calibration)
+//                NO pitch change anywhere in its travel
 //   X            vibrato character + level tilt + fold  (OCTAVE during cal)
 //   Y            scale                       (COARSE TUNE during calibration)
 //
@@ -413,11 +414,10 @@ private:
 		// when the vibrato happened to move, which is a slur that arrives in
 		// jerks or, with vibrato off, never arrives at all.
 		if (!pitchDirty_ && !gliding
-		    && breath_.Register() == regLast_ && vibQ4 == vibLast_)
+		    && vibQ4 == vibLast_)
 			return;
 
 		pitchDirty_ = false;
-		regLast_ = breath_.Register();
 		vibLast_ = vibQ4;
 
 		const int degree = (combo_ < 0) ? 0 : combo_;
@@ -444,9 +444,6 @@ private:
 
 		int32_t semi = QuantizeNote(root, scale_, degree);
 
-		// The explicit register. Overblowing does not emerge from the bore's
-		// physics (see flute.h), so hard blowing adds an octave here.
-		if (regLast_) semi += 12;
 		if (semi > kPitchHiNote) semi = kPitchHiNote;
 
 		// GLIDE IN PITCH SPACE, NOT DELAY SPACE.
@@ -902,7 +899,6 @@ private:
 	int      octave_       = kDefaultOctave;
 	int32_t  cvCentsQ4_    = 0;
 	bool     pitchDirty_ = true;
-	int      regLast_    = 0;
 	int32_t  vibLast_    = 0;
 
 	int32_t coarse_ = 0;

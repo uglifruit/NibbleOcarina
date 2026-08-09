@@ -3,7 +3,7 @@ Name: NIBBLE OCARINA
 short-description: Turns the Workshop System's four buttons into the finger holes of a flute you blow with a knob
 Language: C++ (ComputerCard)
 Creator: Andy Jenkinson (uglifruit)
-Version: "3.1.0"
+Version: "3.2.0"
 Status: Released
 License: CC-BY-4.0
 repository: https://github.com/uglifruit/NibbleOcarina
@@ -17,7 +17,7 @@ contact:
 
 uf2:
   - path: UF2/ocarina.uf2
-    name: NIBBLE OCARINA 3.1.0
+    name: NIBBLE OCARINA 3.2.0
 
 tags:
   - flute
@@ -35,7 +35,7 @@ summary: |
   Patch one output of the FOUR VOLTAGES module into CV In 1, teach the card
   which voltage each button combination produces, and its buttons become
   fingerings. The Main knob is your breath - turn it up and the instrument
-  speaks, turn it down and it stops. Blow hard and it jumps the octave.<br><br>
+  speaks, turn it down and it stops. Push further and it starts to sing.<br><br>
 
   The tone is a pure sine and the expression is VIBRATO. Turn the Main knob up
   and it comes quickly to full volume; keep going and vibrato grows on top - so
@@ -91,9 +91,8 @@ summary: |
   could not be repaired without it choosing its own pitch, so it was replaced.
   What is here now is an oscillator, filtered noise, a resonant body and a
   breath VCA - a synthesiser shaped to sound like a flute rather than a
-  simulation of one. The octave jump is likewise explicit rather than emergent.
-  It sounds like a wind instrument and it always plays in tune, which matters
-  more than the label.
+  simulation of one. It sounds like a wind instrument and it always plays in
+  tune, which matters more than the label.
 
 panel:
   inputs:
@@ -125,7 +124,7 @@ panel:
     - id: CVOut1
       name: Pitch
       type: cv
-      description: "Calibrated 1V/oct pitch. The root of the scale is 0V, so an oscillator sitting at its own zero is already in tune. It follows everything the internal voice does - the fine tune, the vibrato, the octave jump, and the glide during a legato slur, which slides rather than stepping. The two are computed from the same numbers precisely so they cannot disagree."
+      description: "Calibrated 1V/oct pitch. The root of the scale is 0V, so an oscillator sitting at its own zero is already in tune. It follows everything the internal voice does - the fine tune, the vibrato, and the glide during a legato slur, which slides rather than stepping. The two are computed from the same numbers precisely so they cannot disagree."
     - id: CVOut2
       name: Level
       type: cv
@@ -165,7 +164,7 @@ controls:
     -
       main:
         name: Breath
-        description: "The card's only way to be silent - below about seven percent of travel the instrument does not sound at all. It does two things in sequence: level rises FAST and is nearly full by half the travel, the way ears actually hear loudness, and past that point the knob stops adding volume and starts adding VIBRATO instead. So the bottom half is how loud and the top half is how much it sings, and a phrase can move from quiet and steady through loud and steady into loud and singing on one control. The octave jump sits around seventy percent, with a hysteresis band so it cannot flutter. DURING CALIBRATION this becomes fine tune, plus or minus one hundred cents."
+        description: "The card's only way to be silent - below about seven percent of travel the instrument does not sound at all. It does two things in sequence: level rises FAST and is nearly full by half the travel, the way ears actually hear loudness, and past that point the knob stops adding volume and starts adding VIBRATO instead. So the bottom half is how loud and the top half is how much it sings, and a phrase can move from quiet and steady through loud and steady into loud and singing on one control. Nothing in its travel changes the PITCH - a register switch lived here until v3.2, a leftover from an older voice, and it read as an octave jump in the middle of the vibrato. The octave is chosen with X during calibration instead. DURING CALIBRATION this knob becomes fine tune, plus or minus one hundred cents."
       x:
         name: Timbre
         description: "What KIND of vibrato the Main knob adds, morphing through three characters: fully anticlockwise is fast and wide (8Hz, 50 cents) which is dramatic, the centre is fast and tight (8Hz, 10 cents) which is nervous and close, and fully clockwise is slow and wide (3Hz, 50 cents) which is operatic. Turning it up also tilts the level a little and opens the wavefolder on Audio Out 2, so the clockwise end is slower-vibrato, slightly louder and more harmonically complex at once. The fold deliberately stops at half its available range - past that point the harmonics dip before rising again, and a knob that gets brighter then duller reads as broken."

@@ -8,7 +8,7 @@ System](https://www.musicthing.co.uk/workshopsystem/) Computer.
 Patch one output of the **Four Voltages** module into CV In 1 and its four
 buttons become the finger holes of a physically-modelled flute. The Main knob is
 your breath: turn it up and the instrument speaks, turn it down and it stops.
-Blow hard and it jumps the octave.
+Push further and it starts to sing.
 
 The tone is a pure sine and the expression is **vibrato**. Turn the Main knob up
 and it comes quickly to full volume; keep going and vibrato grows on top of it —
@@ -48,7 +48,7 @@ knob** — hold the switch down for two seconds.
 | **Audio In 1** | offsets the Main knob *(used as CV)* |
 | **Audio In 2** | offsets the X knob *(used as CV)* |
 | **Pulse In 1** | tongue: re-articulates without changing the note |
-| **Main** | level, then vibrato depth *(fine tune while calibrating)* |
+| **Main** | level, then vibrato depth — never pitch *(fine tune while calibrating)* |
 | **X** | vibrato character, level tilt, wavefold *(octave while calibrating)* |
 | **Y** | scale *(coarse tune while calibrating)* |
 | **Switch ↑** | legato: glide between notes, plus vibrato — and nothing else |
@@ -112,9 +112,6 @@ phase, so they mix without comb filtering and the square always lines up.
 **X** sets where that whole range sits — fully anticlockwise is airy and soft,
 fully clockwise is pure and focused. The two multiply, so soft playing at CCW is
 nearly all breath while hard playing at CW is a strong clear tone.
-
-**Blowing hard jumps the octave**, at about 70% of the knob's travel. There is a
-hysteresis band, so it will not flutter at the boundary.
 
 **The chiff stop is a real stop.** Holding the switch down does not just close a
 gate — it damps the bore, so the sound stops instead of ringing out. Use it to
@@ -289,7 +286,7 @@ sh tools/syntax.sh            # type-check every source in ~1s
 python tools/levelsim.py      # the detector, trilling, the mode decision
 python tools/pitchsim.py      # the pitch tables and the two pitch paths
 python tools/flutesim.py      # the bore: tuning, stability, harmonics
-python tools/breathsim.py     # breath, articulation, the register switch
+python tools/breathsim.py     # the level and vibrato curves, articulation
 python tools/caltable.py --check   # this README's tables match the source
 ```
 

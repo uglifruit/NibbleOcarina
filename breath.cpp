@@ -15,7 +15,6 @@ void Breath::Init()
 	sinceChiff_ = kChiffMinGapTicks;
 	chiffFired_ = false;
 	stopped_ = false;
-	register_ = 0;
 	vibCents_ = vibRateQ8_ = vibCentsMax_ = 0;
 	vibPhase_ = 0;
 	artic_ = Articulation::Tongued;
@@ -75,23 +74,6 @@ void Breath::SetKnob(int32_t knob, int32_t cvAdd)
 		if (curved_ > 4095) curved_ = 4095;
 	}
 
-	// The register switch, with hysteresis.
-	//
-	// Overblowing does not emerge from the bore's physics (see flute.h), so it
-	// is decided here. The band between the two thresholds is what stops
-	// breath noise at the boundary from flipping the octave several times a
-	// second — which would be the most unmusical thing this card could do.
-	// Against EFFORT, not level: level has flattened long before the top of
-	// the knob, so a threshold on it would sit in a region where a large
-	// physical movement barely changes the number.
-	if (register_ == 0)
-	{
-		if (effort_ >= kRegisterUp) register_ = 1;
-	}
-	else
-	{
-		if (effort_ <= kRegisterDown) register_ = 0;
-	}
 }
 
 void Breath::SetStopped(bool s)

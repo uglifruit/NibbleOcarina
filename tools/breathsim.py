@@ -20,8 +20,6 @@ import sys
 CTRL_RATE = 3000
 
 BREATH_THRESH = 120
-REGISTER_UP   = 2870
-REGISTER_DOWN = 2460
 
 CHIFF_TICKS       = CTRL_RATE // 80          # ~12ms
 CHIFF_NOISE_Q15   = 14000
@@ -66,7 +64,6 @@ class Breath:
         self.since_chiff = CHIFF_MIN_GAP
         self.chiff_fired = False
         self.stopped = False
-        self.register = 0
         self.vib_cents = 0
         self.vib_phase = 0
         self.artic = TONGUED
@@ -88,13 +85,6 @@ class Breath:
             i4 = (i2 * i2) >> 12
             self.curved = min(4095, 4096 - ((i4 * inv) >> 12))
 
-        # Against EFFORT: level has flattened long before the top of the knob.
-        if self.register == 0:
-            if self.effort >= REGISTER_UP:
-                self.register = 1
-        else:
-            if self.effort <= REGISTER_DOWN:
-                self.register = 0
 
     def note_on(self):
         if self.artic != TONGUED:
@@ -174,43 +164,23 @@ def test_stop():
     check("release restores the air", b.breath, 4095)
 
 
-def test_register_hysteresis():
-    """The boundary must not chatter under dither.
+def test_no_pitch_change_from_main():
+    """The Main knob must NOT move the pitch anywhere in its travel.
 
-    Without a hysteresis band, breath noise at the threshold flips the octave
-    several times a second, which is the single most unmusical failure this
-    card has available to it.
+    It used to add an octave past about 70%, faking the overblow a waveguide
+    voice could not produce. That voice is gone, and on the current one the
+    jump was just a 12-semitone step landing in the middle of the vibrato
+    stage — reported from hardware as the vibrato boundary sounding "an octave
+    higher".
+
+    This test exists so the register cannot quietly come back: the knob is
+    level then vibrato, and vibrato is a wobble ABOUT the note, never a
+    transposition of it.
     """
-    print("register switch")
+    print("Main does not transpose")
     b = Breath()
-    b.set_knob(1000)
-    check("low breath is the low register", b.register, 0)
-    b.set_knob(4095)
-    check("full breath jumps the octave", b.register, 1)
-    b.set_knob(1000)
-    check("...and drops back", b.register, 0)
-
-    # Find the knob value that sits at the UP threshold, then dither around it.
-    knob = 0
-    for k in range(4096):
-        b2 = Breath()
-        b2.set_knob(k)
-        if b2.effort >= REGISTER_UP:
-            knob = k
-            break
-    b = Breath()
-    flips = 0
-    last = b.register
-    rng = 12345
-    for _ in range(20000):
-        rng = (rng * 1103515245 + 12345) & 0x7FFFFFFF
-        b.set_knob(knob + (rng % 41) - 20)     # +/-20 counts of dither
-        if b.register != last:
-            flips += 1
-            last = b.register
-    print(f"        dithering at the boundary (knob {knob}): {flips} flips")
-    check_true("hysteresis stops the boundary chattering", flips <= 2,
-               f"{flips} flips in 20000 ticks")
+    assert not hasattr(b, "register"),         "the register switch is back -- see docs/DEVLOG.md v3.2.0"
+    check("Breath exposes no register", hasattr(b, "register"), False)
 
 
 def test_chiff_is_an_edge():
@@ -344,24 +314,23 @@ def test_effort_keeps_climbing():
     check_true("level and effort diverge", b.curved - b.effort > 800,
                f"level {b.curved} vs effort {b.effort}")
 
-    # And the register boundary should land in the upper half of the travel --
-    # that is the whole reason the curve is squared rather than linear.
+    # Where the vibrato stage begins, as a fraction of the knob. It has to
+    # leave real room to grow in -- crammed into the last tenth it cannot be
+    # played deliberately.
+    from flutesim import VIB_ONSET
     knob = next(k for k in range(4096)
-                if (lambda b: (b.set_knob(k), b.effort)[1])(Breath()) >= REGISTER_UP)
+                if (lambda b: (b.set_knob(k), b.effort)[1])(Breath()) >= VIB_ONSET)
     pct = 100 * knob / 4095
-    print(f"        octave jump at {pct:.0f}% of travel")
-    # It must be high enough to be a deliberate act and low enough to be
-    # reachable. Crammed into the last 10% it cannot be played on purpose;
-    # below about 60% it happens by accident during ordinary phrasing.
-    check_true("the octave jump is playable (60-80% of travel)",
-               60 <= pct <= 80, f"{pct:.0f}%")
+    print(f"        vibrato begins at {pct:.0f}% of travel")
+    check_true("vibrato has most of the knob to grow in (20-45%)",
+               20 <= pct <= 45, f"{pct:.0f}%")
 
 
 def main():
     print("breathsim — model of breath.cpp\n")
     test_silence()
     test_stop()
-    test_register_hysteresis()
+    test_no_pitch_change_from_main()
     test_chiff_is_an_edge()
     test_chiff_rate_limit()
     test_legato_has_no_chiff()

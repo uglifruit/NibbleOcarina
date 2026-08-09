@@ -13,9 +13,15 @@
 //
 //   3. The chiff stop: switch-down forces silence AND damps the bore.
 //
-//   4. The register switch. See flute.h — overblowing does not emerge from the
-//      physics, so hard blowing jumps the octave explicitly, with hysteresis
-//      so the boundary cannot chatter.
+// There is no register switch any more. The card used to add an octave past
+// about 70% of the knob, faking the overblow a waveguide voice could not
+// produce on its own. That voice is long gone, and on the current one the jump
+// was simply a 12-semitone STEP in the middle of the vibrato stage — reported
+// from hardware as "when vibrato boundary on Main knob is added it seems to be
+// an octave higher".
+//
+// The octave is chosen deliberately during calibration with the X knob, which
+// is where an octave control belongs.
 
 #pragma once
 #include <stdint.h>
@@ -34,21 +40,6 @@ namespace nib {
 /// hardware as "the ramp from silence to sound still seems very slow". Still
 /// wide enough to find "off" by feel without looking.
 constexpr int32_t kBreathThresh = 120;
-
-/// Where the octave jump happens, as an EFFORT value (0..4095).
-///
-/// Effort, not level: level is log-shaped and has flattened long before the top
-/// of the knob, so a threshold on it would sit where a large physical movement
-/// barely changes the number. Effort stays linear, so 2870 of 4095 really is
-/// 70% of the travel.
-///
-/// The band between the two is hysteresis. Once the register has flipped up it
-/// takes a drop back below kRegisterDown to return. Without a band, breath
-/// noise at the boundary flips the octave several times a second, which is the
-/// single most unmusical thing this card could do — tools/breathsim.py dithers
-/// the knob across the threshold and asserts it stays put.
-constexpr int32_t kRegisterUp   = 2870;   // ~70% of knob travel
-constexpr int32_t kRegisterDown = 2460;   // ~60%, a comfortable band below
 
 // ---------------------------------------------------------------------------
 // Articulation
@@ -148,9 +139,6 @@ public:
 	/// True if a chiff started on this tick — one blip on Pulse Out 2.
 	bool ChiffFired() const { return chiffFired_; }
 
-	/// Which register: 0 = as fingered, 1 = an octave up.
-	int Register() const { return register_; }
-
 	/// Current vibrato offset in Q4 CENTS (sixteenths), signed.
 	///
 	/// Q4 and not whole cents: at small depths whole-cent arithmetic quantises
@@ -166,7 +154,6 @@ private:
 	int32_t sinceChiff_ = kChiffMinGapTicks;
 	bool    chiffFired_ = false;
 	bool    stopped_    = false;
-	int     register_   = 0;
 	int32_t vibCents_    = 0;
 	int32_t vibRateQ8_   = 0;
 	int32_t vibCentsMax_ = 0;

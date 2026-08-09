@@ -5,6 +5,47 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v3.2.0 — the "vibrato step" was an octave jump
+
+> "when vibrato boundary on main knob is added it seems to be an octave higher
+> - hence step"
+
+A better diagnosis than mine, and it identified something I had walked past
+twice. The step was never in the vibrato at all.
+
+**The Main knob still had a register switch on it.** Past about 70% of travel it
+added twelve semitones — `if (regLast_) semi += 12;` — instantly, in one control
+tick. That is a hard octave jump landing right in the middle of the vibrato
+stage, which is exactly what "the vibrato boundary sounds an octave higher"
+describes.
+
+It was a fossil. The register switch existed to fake the overblow that the v1
+WAVEGUIDE could not produce on its own, and it survived two complete rewrites of
+the voice because nothing ever forced a look at it. Its own comment still said
+"overblowing does not emerge from the bore's physics (see flute.h)" — a bore
+that had not existed for two versions.
+
+Removed entirely. The Main knob is level, then vibrato, and **nothing in its
+travel changes the pitch**. The octave is chosen deliberately with X during
+calibration, which is where an octave control belongs.
+
+`tools/breathsim.py` now asserts that `Breath` exposes no register at all, so it
+cannot quietly come back.
+
+### Why the Q4 fix in v3.1 was still worth doing
+
+The whole-cent quantisation was real — vibrato genuinely did nothing below one
+cent and then arrived at two. It just was not the thing being reported. Both
+were steps in the same region of the same knob, which is how one masked the
+other.
+
+The lesson is about diagnosis rather than code: I had a plausible mechanism, it
+measured true, and it was the wrong bug. "It's not there in portamento mode"
+narrowed it correctly; "it seems to be an octave higher" identified it exactly.
+Ask what the player is HEARING, not just where.
+
+---
+
 ## v3.1.0 — the knob, the step, and ten is enough
 
 Four reports from the third hardware session.

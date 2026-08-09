@@ -122,6 +122,12 @@ Nothing feeds back into the nonlinearity, so it can only colour a pitch that is
 already exact. **If you are tempted to reintroduce a feedback path for
 authenticity, read the devlog first.**
 
+**The Main knob must never change the pitch.** It is level, then vibrato depth.
+A register switch lived on it until v3.2 — a fossil of the v1 waveguide, faking
+an overblow for a bore that had not existed for two rewrites — and it read as an
+octave jump in the middle of the vibrato stage. `breathsim.py` asserts `Breath`
+has no register field so it cannot return. The octave is X, during calibration.
+
 **Ten combinations, not fifteen.** The card used to walk all fifteen and decide
 at the end whether the voltages separated well enough to use them all. Hardware
 said fifteen was simply too many to play. The triples and the quad are still
