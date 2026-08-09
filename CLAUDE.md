@@ -122,6 +122,22 @@ Nothing feeds back into the nonlinearity, so it can only colour a pitch that is
 already exact. **If you are tempted to reintroduce a feedback path for
 authenticity, read the devlog first.**
 
+**The instrument is BOWED.** Silent until the switch is held or Pulse In 1 goes
+high. Tap = struck note, hold = sustain, and while held the fingering glides
+without re-attacking. Main sets the note's peak AND its release length (louder
+lasts longer); X sets the attack shape. Do not reintroduce a continuous drone —
+it was there until v4.0 and it meant every note had the same shape.
+
+**No switch position that is held while playing may carry a gesture.** This has
+now cost two bugs: switch-up as a held legato mode with a staged timer on it
+(v2.0, dropped the card into tune mode mid-slur), and switch-down as both mute
+and a 2-second calibration hold. Up is a TOGGLE you flick; down is the bow;
+calibration has no gesture at all and runs only at boot.
+
+**Time constants: a one-pole reaches 90% in ~2.3 tau, not 6.9.** 6.9 is the time
+to -60dB, which is the right measure for a RELEASE and the wrong one for an
+ATTACK. Using it made the slow attack arrive in 196ms instead of a second.
+
 **The Main knob must never change the pitch.** It is level, then vibrato depth.
 A register switch lived on it until v3.2 — a fossil of the v1 waveguide, faking
 an overblow for a bore that had not existed for two rewrites — and it read as an

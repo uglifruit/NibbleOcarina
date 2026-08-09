@@ -1,17 +1,26 @@
-// breath.h — how the knob becomes a wind instrument's air supply.
+// breath.h — the envelope, and how a note is begun, held and ended.
 //
-// Four jobs, all at control rate except Step():
+// ---------------------------------------------------------------------------
+// THE INSTRUMENT IS BOWED, NOT BLOWN
+// ---------------------------------------------------------------------------
 //
-//   1. The breath curve, and the threshold below which the card is SILENT.
-//      This is what replaces the fingering's inability to express "no holes
-//      covered" — Four Voltages has no rest voltage, so silence has to come
-//      from somewhere else, and on a wind instrument that somewhere is the
-//      air.
+// The card is SILENT until you sound it. The momentary switch (or a gate on
+// Pulse In 1) is the bow:
 //
-//   2. Articulation: tongued (a chiff on every new note) or legato (glide, no
-//      chiff, plus vibrato).
+//   TAP      a struck note. Attack, then release.
+//   HOLD     the note sustains for as long as you hold it, then releases.
+//   WHILE HELD
+//            moving the Main knob swells the note in real time, and changing
+//            the fingering GLIDES to the new pitch without re-attacking — the
+//            way a finger moves on a bowed string.
 //
-//   3. The chiff stop: switch-down forces silence AND damps the bore.
+// Main sets the note's peak level AND, coupled to it, how long it takes to die
+// away: a loud note rings on, a quiet one is short. X sets the attack shape,
+// from an instant strike to a slow swell.
+//
+// v3.3 and earlier had the Main knob sounding a continuous drone and the
+// switch acting as a MUTE. That is backwards for an instrument you play rather
+// than one you leave running, and it meant every note had the same shape.
 //
 // There is no register switch any more. The card used to add an octave past
 // about 70% of the knob, faking the overblow a waveguide voice could not
@@ -46,37 +55,56 @@ namespace nib {
 constexpr int32_t kBreathThresh = 60;
 
 // ---------------------------------------------------------------------------
-// Articulation
+// The envelope
 // ---------------------------------------------------------------------------
 
-enum class Articulation : uint8_t {
-	Tongued,   ///< switch MIDDLE: a chiff on every new note
-	Legato,    ///< switch UP: glide between notes, no chiff, plus vibrato
-};
-
-/// Chiff: a momentary dip in the level at the start of a note, which is what
-/// separates one note from the next when they are the same pitch.
+/// Attack shift range, set by X. Smaller is faster.
 ///
-/// The noise burst that used to accompany this is gone with the rest of the air
-/// path — there is no noise generator any more. What remains is purely the dip,
-/// which is the part that actually articulates: a short gap reads as a new
-/// note, whereas a noise transient on a pure tone just reads as a click.
+/// 2 is about 3ms — a strike, effectively instant. 11 is about 1.5s, a swell
+/// you can hear arriving. X sweeps between them alongside its vibrato duties,
+/// so the anticlockwise end is percussive with a wide vibrato while the
+/// clockwise end is a slow swell with a slow one.
 ///
-/// Expected to need tuning by ear. Too short and repeated notes smear together;
-/// too deep and it is a gap rather than an articulation.
-constexpr int32_t kChiffTicks     = kCtrlRate / 80;    ///< ~12ms
-constexpr int32_t kChiffDipQ12    = 1600;              ///< how far the level dips
+/// The slow end was 9, chosen from the one-pole's time to -60dB. That is the
+/// wrong measure for an ATTACK: a one-pole reaches 90% in about 2.3 time
+/// constants, not 6.9, so shift 9 arrived in 196ms rather than the intended
+/// second and the "swell" end of the knob was barely slower than the middle.
+/// Measured in tools/breathsim.py.
+constexpr uint8_t kAttackShiftFast = 2;
+constexpr uint8_t kAttackShiftSlow = 11;
 
-/// The shortest gap between two chiffs.
+/// Release shift range, COUPLED TO LEVEL.
 ///
-/// Without this a fast trill fires a chiff per note — at 10Hz that is a
-/// stutter rather than a trill. 60ms lets ordinary playing articulate every
-/// note while a deliberate trill smooths into one gesture.
-constexpr int32_t kChiffMinGapTicks = (kCtrlRate * 6) / 100;
+/// This is the "generally louder will last longer" coupling: the release shift
+/// is derived from the note's peak rather than from a knob of its own, so a
+/// quiet note dies in about 150ms and a loud one rings for over a second. One
+/// gesture, two musical consequences, which is what makes the knob feel like
+/// dynamics rather than like a volume fader.
+constexpr uint8_t kReleaseShiftMin = 6;    ///< ~147ms, quiet notes
+constexpr uint8_t kReleaseShiftMax = 10;   ///< ~2.3s, loud notes
 
-/// Vibrato is now the instrument's whole expression rather than a legato
-/// garnish, so its rate and depth come from the knobs — see VibratoFor() in
-/// flute.h. What lives here is only the oscillator that runs at that rate.
+/// Below this the envelope is considered finished and is snapped to zero.
+///
+/// A one-pole decay approaches zero asymptotically and would leave the voice
+/// running forever at an inaudible level, holding the gate high and burning
+/// cycles. 8 of 4095 is about -54dB.
+constexpr int32_t kEnvFloor = 8;
+
+/// Extra fractional bits carried in the envelope accumulator.
+///
+/// Without these `v -= (v >> shift)` stalls: once `v >> shift` rounds to zero
+/// the decay stops dead, which caps the achievable release length regardless
+/// of the shift. NIBBLE hit exactly this and every setting past shift 11
+/// decayed in the same 43ms. Eight extra bits push the stall far below the
+/// audible floor.
+constexpr int kEnvFrac = 8;
+
+// ---------------------------------------------------------------------------
+// Vibrato
+// ---------------------------------------------------------------------------
+
+/// Vibrato rate and depth come from the knobs — see VibratoFor() in flute.h.
+/// What lives here is only the oscillator that runs at that rate.
 ///
 /// Rate arrives as Q8 Hz and has to become a Q32 phase increment per control
 /// tick. Dividing by the control rate would be a runtime divide, so it is a
@@ -85,8 +113,17 @@ constexpr int32_t kChiffMinGapTicks = (kCtrlRate * 6) / 100;
 /// This constant is tied to kCtrlRate. Change one, change both.
 constexpr uint32_t kVibHzToIncQ16 = 366503876u;
 
-/// Glide rate for legato, as a slew shift. Larger is slower.
-constexpr uint8_t kGlideShift = 9;
+// ---------------------------------------------------------------------------
+// Portamento
+// ---------------------------------------------------------------------------
+
+/// Glide rate, as a slew shift. Smaller is FASTER.
+///
+/// 5 is about 70ms between adjacent notes — quick enough to read as an
+/// articulation rather than an effect. It was 9 (over a second across a wide
+/// interval), which on a struck instrument meant the glide was still arriving
+/// when the note had already decayed.
+constexpr uint8_t kGlideShift = 5;
 
 // ---------------------------------------------------------------------------
 
@@ -97,72 +134,70 @@ public:
 	void Init();
 
 	/// Control rate. `knob` and `cvAdd` are raw 0..4095 / signed CV.
+	///
+	/// Sets the note's PEAK, not its level: while a note is sounding this is
+	/// what the envelope is climbing toward, so moving the knob mid-note swells
+	/// or eases it. While nothing sounds it is simply how loud the next note
+	/// will be.
 	void SetKnob(int32_t knob, int32_t cvAdd);
 
-	void SetArticulation(Articulation a) { artic_ = a; }
-	Articulation Art() const             { return artic_; }
+	/// Attack shape, 0..4095 from the X knob. 0 is a strike, 4095 a slow swell.
+	void SetAttack(int32_t xKnob);
 
-	/// Momentary switch-down: silence, and damp the bore.
-	void SetStopped(bool s);
-	bool Stopped() const { return stopped_; }
+	/// THE BOW. True while the switch is held or Pulse In 1 is high.
+	///
+	/// Rising edge starts a note; the note sustains for as long as this stays
+	/// true; the falling edge releases it. A tap is simply a very short hold,
+	/// which is why one control gives both struck and sustained notes without
+	/// a mode.
+	void SetGate(bool on);
+	bool Gated() const { return gate_; }
 
-	/// A new fingering arrived. Fires a chiff if articulation and timing allow.
-	void NoteOn();
+	/// True on the tick a note started — one blip for Pulse Out 2.
+	bool Struck() const { return struck_; }
 
-	/// Control rate, after SetKnob(). Advances chiff and vibrato.
+	/// Control rate, after SetKnob()/SetGate(). Advances the envelope.
 	void Tick();
 
-	/// LEVEL: what the VCA uses, 0..4095. Zero means silent.
-	///
-	/// Deliberately NOT the same as Effort(). The knob is log-shaped for level,
-	/// so the instrument is at nearly full volume by about half its travel —
-	/// which is how ears hear loudness and how a wind instrument actually
-	/// behaves. A linear or squared level curve spends most of the sweep still
-	/// getting louder, which reads as an unresponsive knob.
-	int32_t BreathQ12() const { return breath_; }
+	/// The envelope, 0..4095. This is what the voice's VCA uses.
+	int32_t LevelQ12() const { return env_ >> kEnvFrac; }
 
-	/// EFFORT: how hard you are blowing, 0..4095, LINEAR to the top.
+	/// True while anything is audible — drives the gate output and lets the
+	/// card skip work when it is silent.
+	bool Sounding() const { return env_ > 0; }
+
+	/// EFFORT: the knob position, LINEAR to the top.
 	///
-	/// This is what brightness and harmonic drive follow. Once level has
-	/// flattened out, effort keeps climbing, so the upper half of the knob
-	/// stops being louder and starts being richer — the note leans in rather
-	/// than just getting bigger. Without a separate curve the top third of the
-	/// travel would do nothing audible at all.
+	/// Timbre follows this rather than the envelope, so brightness tracks how
+	/// hard you are playing rather than flickering with every note's decay.
 	int32_t EffortQ12() const { return effort_; }
 
-	/// True while the air is above the sounding threshold — drives the gate.
-	bool Sounding() const { return breath_ > 0; }
-
-	/// Vibrato rate and depth, set from both knobs at control rate.
-	void SetVibrato(int32_t rateQ8, int32_t cents)
+	/// Vibrato rate (Q8 Hz) and depth (Q4 cents), from both knobs.
+	void SetVibrato(int32_t rateQ8, int32_t centsQ4)
 	{
-		vibRateQ8_ = rateQ8;
-		vibCentsMax_ = cents;
+		vibRateQ8_   = rateQ8;
+		vibCentsMax_ = centsQ4;
 	}
-
-	/// True if a chiff started on this tick — one blip on Pulse Out 2.
-	bool ChiffFired() const { return chiffFired_; }
 
 	/// Current vibrato offset in Q4 CENTS (sixteenths), signed.
 	///
 	/// Q4 and not whole cents: at small depths whole-cent arithmetic quantises
 	/// the entire modulation to zero, so vibrato did nothing until its depth
-	/// reached two cents and then arrived abruptly. That was the audible step.
+	/// reached two cents and then arrived abruptly. That was an audible step.
 	int32_t VibratoCentsQ4() const { return vibCents_; }
 
 private:
-	int32_t curved_     = 0;   ///< LEVEL after the curve, before chiff/stop
-	int32_t effort_     = 0;   ///< how hard you are blowing, linear
-	int32_t breath_     = 0;   ///< what the bore actually gets
-	int32_t chiffTicks_ = 0;
-	int32_t sinceChiff_ = kChiffMinGapTicks;
-	bool    chiffFired_ = false;
-	bool    stopped_    = false;
-	int32_t vibCents_    = 0;
-	int32_t vibRateQ8_   = 0;
-	int32_t vibCentsMax_ = 0;
-	uint32_t vibPhase_   = 0;
-	Articulation artic_ = Articulation::Tongued;
+	int32_t  peak_    = 0;   ///< what the envelope climbs toward, Q12
+	int32_t  effort_  = 0;   ///< raw knob position, linear
+	int32_t  env_     = 0;   ///< the envelope itself, Q12 << kEnvFrac
+	bool     gate_    = false;
+	bool     struck_  = false;
+	uint8_t  attack_  = kAttackShiftFast;
+
+	int32_t  vibCents_    = 0;
+	int32_t  vibRateQ8_   = 0;
+	int32_t  vibCentsMax_ = 0;
+	uint32_t vibPhase_    = 0;
 };
 
 } // namespace nib

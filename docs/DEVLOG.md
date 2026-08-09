@@ -5,6 +5,72 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v4.0.0 — the instrument is bowed, not blown
+
+The largest change since the voice was rebuilt, and it changes how the card is
+played rather than how it sounds.
+
+**The momentary switch is now the bow.** The card is silent until you sound it:
+
+- **tap** → a struck note, attack then release
+- **hold** → the note sustains for as long as you hold it
+- **while held** → moving Main swells the note in real time, and changing the
+  fingering GLIDES to the new pitch without re-attacking
+
+Pulse In 1 is the same control, so a sequencer gate plays the card exactly as a
+finger does. A short trigger gives a struck note; a long gate gives a held one.
+One behaviour, two sources, no mode.
+
+Before this, Main sounded a continuous drone and the switch was a MUTE. That is
+backwards for something you play rather than leave running, and it meant every
+note had the same shape.
+
+### The envelope
+
+Main sets the note's peak **and**, coupled to it, how long it takes to die: a
+loud note rings for over a second, a quiet one is gone in 95ms. One gesture,
+two musical consequences — that coupling is what makes the knob feel like
+dynamics rather than like a fader.
+
+X sets the attack shape alongside its vibrato duties, from a 3ms strike to a
+790ms swell, so the anticlockwise end is percussive-and-wide-vibrato and the
+clockwise end is slow-and-gentle in both respects at once.
+
+**One measurement error worth recording.** The slow attack was first set from
+the one-pole's time to −60dB, which is the wrong measure for an attack: a
+one-pole reaches 90% in about 2.3 time constants, not 6.9. Shift 9 arrived in
+196ms rather than the intended second, so the "swell" end of the knob was barely
+slower than its middle. Shift 11 gives the 790ms it was supposed to.
+
+### Portamento is a toggle now
+
+Flick the switch **up and let go** — it toggles, and LED 4 shows the state.
+Holding up does nothing at all.
+
+This is the third arrangement of this control and the first that does not fight
+the player. v2.0 made UP a held legato mode *and* hung a staged 1s/3s gesture on
+it, so a three-second slur dropped the card into tune mode with no way out. The
+rule that cost, applied properly this time: **a switch position you hold while
+playing cannot also carry a gesture.** Up is now momentary in practice.
+
+The glide itself went from shift 9 to 5 — about 70ms between adjacent notes
+rather than over a second. On a struck instrument the old rate meant the glide
+was still arriving after the note had decayed.
+
+### Calibration lost its gesture
+
+There is no 2-second hold any more. The switch is a playing control and cannot
+carry one, which is the same rule as above. Calibration runs once at power-on;
+reset to get back to it.
+
+### LEDs
+
+LED 4 became the portamento indicator — the one thing about the card's state
+that cannot be heard until the next note. LED 5 became the level meter, so the
+panel shows each note's shape as it rises and decays.
+
+---
+
 ## v3.3.0 — an S-curve, because both ends matter
 
 > "Doesn't seem to cleanly go to silence. Can we have an S shaped ramp from

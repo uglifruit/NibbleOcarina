@@ -1,14 +1,14 @@
 # NIBBLE OCARINA
 
-**Four buttons. One cable. A wind instrument you blow with a knob.**
+**Four buttons. One cable. A flute you bow with a switch.**
 
 A program card for the [Music Thing Modular Workshop
 System](https://www.musicthing.co.uk/workshopsystem/) Computer.
 
 Patch one output of the **Four Voltages** module into CV In 1 and its four
-buttons become the finger holes of a physically-modelled flute. The Main knob is
-your breath: turn it up and the instrument speaks, turn it down and it stops.
-Push further and it starts to sing.
+buttons become the finger holes. The momentary switch is the bow, and Main is
+how hard you play: quiet notes are short, loud ones ring on, and past halfway
+it starts to sing with vibrato.
 
 The tone is a pure sine and the expression is **vibrato**. Turn the Main knob up
 and it comes quickly to full volume; keep going and vibrato grows on top of it —
@@ -47,29 +47,28 @@ knob** — hold the switch down for two seconds.
 | **CV In 2** | pitch offset, ±2 octaves in semitones |
 | **Audio In 1** | offsets the Main knob *(used as CV)* |
 | **Audio In 2** | offsets the X knob *(used as CV)* |
-| **Pulse In 1** | tongue: re-articulates without changing the note |
-| **Main** | level, then vibrato depth — never pitch *(fine tune while calibrating)* |
-| **X** | vibrato character, level tilt, wavefold *(octave while calibrating)* |
+| **Pulse In 1** | the bow, same as the switch: gate high sounds a note |
+| **Main** | note peak, release length, then vibrato *(fine tune while calibrating)* |
+| **X** | attack shape, vibrato character, wavefold *(octave while calibrating)* |
 | **Y** | scale *(coarse tune while calibrating)* |
-| **Switch ↑** | legato: glide between notes, plus vibrato — and nothing else |
-| **Switch —** | tongued: a chiff on every note |
-| **Switch ↓** | mute / chiff stop *(momentary)* |
+| **Switch ↑** | flick to toggle portamento — shown on LED 4 |
+| **Switch —** | rest — the card is silent here |
+| **Switch ↓** | **the bow** — tap to strike, hold to sustain |
 | **Audio Out 1** | the tone, a sine |
 | **Audio Out 2** | the same tone, wavefolded as X rises |
 | **CV Out 1** | 1V/oct pitch — the root is 0V, and it carries the vibrato |
 | **CV Out 2** | level — tracks what you hear |
-| **Pulse Out 1** | a trigger on every note change |
+| **Pulse Out 1** | gate: high for the whole note, release included |
 | **Pulse Out 2** | the same tone as a square |
 
-### Holds
+### Gestures
 
-| Gesture | Does |
-|---|---|
-| **Switch ↓ 2s** | calibrate — works from anywhere, including mid-flash |
+**There are none.** Calibration runs once at power-on; reset to get back to it.
 
-That is the only hold gesture on the card. **Switch up carries none**: it is a
-position you hold while playing, and a held playing position cannot also be a
-timer without firing mid-phrase.
+Both switch positions are playing controls — down is the bow, up toggles
+portamento — and a position you use while playing cannot also carry a timer
+without firing mid-phrase. That mistake cost two separate bugs; see
+`docs/DEVLOG.md`.
 
 ---
 
@@ -78,44 +77,50 @@ timer without firing mid-phrase.
 **Silence is the knob, not the fingering.** This is not a design preference. The
 Four Voltages module has no rest voltage: let go of every button and its output
 stays at whatever was last pressed. "No holes covered" is not a state it can
-express, so it cannot mean silence. On a real ocarina you stop by not blowing,
-which is exactly what the Main knob does here.
+express, so it cannot mean silence. Here the card is simply silent until you
+bow it, which is how a struck instrument works anyway.
+
+**The switch is the bow.** The card is silent until you sound it: **tap** for a
+struck note, **hold** to sustain. While you hold it, turning Main swells the
+note and changing the fingering glides to the new pitch without re-attacking —
+the way a finger moves on a bowed string. Pulse In 1 does exactly the same, so a
+sequencer gate plays it the way your finger does.
 
 **Releasing a finger is a note.** Come off AB onto A and you hear A. That is
 what makes trilling work: hold one hole, waggle another, and you get an
-alternation. Up to about 16 waggles a second is clean.
+alternation. Up to about 16 waggles a second is clean. Under a held bow the
+whole trill happens inside one note.
 
-**Switch up is the trill mode.** Under tongued articulation every note gets a
-chiff, and a fast trill becomes a stutter. Legato glides between the two pitches
-instead, which is what a trill sounds like on a wind instrument.
+**The Main knob does three things at once.** It sets how loud the note is, how
+long it rings, and — past about a third of its travel — how much vibrato it
+gains:
 
-**The Main knob does two things in sequence.** It reaches nearly full volume by
-about half its travel — fast, like ears hear loudness — and past that point it
-stops getting louder and starts adding **vibrato** instead. So the bottom half is
-"how loud" and the top half is "how much it sings".
-
-**X chooses the vibrato**, morphing through three characters:
-
-| X | vibrato |
+| Main | note |
 |---|---|
-| fully CCW | fast and wide — 8Hz, 50 cents |
-| centre | fast and tight — 8Hz, 10 cents |
-| fully CW | slow and wide — 3Hz, 50 cents |
+| just above silent | quiet, ~95ms, steady |
+| a third up | most of full volume, a few hundred ms |
+| two thirds | loud, ~1s, singing |
+| full | loudest, over a second, wide vibrato |
 
-Turning X up also tilts the level a little and opens the wavefolder on Audio
-Out 2, so the clockwise end is slower-vibrato, slightly louder and more
-harmonically complex at once.
+Loud notes lasting longer is the coupling that makes one knob feel like
+dynamics rather than a fader. Turn it while the bow is held and the note swells
+or eases under your hand.
+
+**X chooses the attack and the vibrato together:**
+
+| X | attack | vibrato |
+|---|---|---|
+| fully CCW | 3ms — a strike | fast and wide, 8Hz / 50 cents |
+| centre | ~50ms | fast and tight, 8Hz / 10 cents |
+| fully CW | ~790ms — a swell | slow and wide, 3Hz / 50 cents |
+
+So the anticlockwise end is percussive and dramatic, the clockwise end slow and
+gentle in both respects at once. X also opens the wavefolder on Audio Out 2 and
+tilts the level up slightly.
 
 **The three audio outputs are one oscillator.** Audio 1 is its sine, Audio 2 the
 same wave folded, Pulse 2 the same wave squared — all at identical pitch and
 phase, so they mix without comb filtering and the square always lines up.
-**X** sets where that whole range sits — fully anticlockwise is airy and soft,
-fully clockwise is pure and focused. The two multiply, so soft playing at CCW is
-nearly all breath while hard playing at CW is a strong clear tone.
-
-**The chiff stop is a real stop.** Holding the switch down does not just close a
-gate — it damps the bore, so the sound stops instead of ringing out. Use it to
-cut a phrase or play hard staccato.
 
 ---
 
@@ -285,7 +290,7 @@ cmake --build build
 sh tools/syntax.sh            # type-check every source in ~1s
 python tools/levelsim.py      # the detector, trilling, the mode decision
 python tools/pitchsim.py      # the pitch tables and the two pitch paths
-python tools/flutesim.py      # the bore: tuning, stability, harmonics
+python tools/flutesim.py      # the voice: pitch, vibrato, fold, silence
 python tools/breathsim.py     # the level and vibrato curves, articulation
 python tools/caltable.py --check   # this README's tables match the source
 ```

@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""breathsim.py — a model of breath.cpp.
+"""breathsim.py — a model of breath.cpp: the envelope and the level curve.
 
 A LINE-BY-LINE port. If breath.cpp changes, change this — or delete it rather
 than let it drift.
 
-Small, but it covers three things that are easy to get wrong and awkward to
-hear:
+The card is BOWED, not blown: silent until the switch is held or Pulse In 1
+goes high. A tap is a struck note, a hold sustains. So the things worth pinning
+down are the ones a player would notice:
 
-  - the register switch must not chatter at the boundary
-  - the chiff pulse is an EDGE (one tick), not a level
-  - a fast trill must not become a chiff stutter
+    silence      no gate must mean no sound, and the tail must actually end
+    struck       a tap must give a complete note, not a click
+    sustain      a hold must hold, indefinitely, without drifting
+    swell        moving the knob mid-note must move the note
+    coupling     loud notes must last longer than quiet ones
+    curve        the level curve must be an S, and MONOTONIC
 
 Run:  python tools/breathsim.py
 """
@@ -21,14 +25,15 @@ CTRL_RATE = 3000
 
 BREATH_THRESH = 60
 
-CHIFF_TICKS       = CTRL_RATE // 80          # ~12ms
-CHIFF_NOISE_Q15   = 14000
-CHIFF_DIP_Q12     = 1200
-CHIFF_MIN_GAP     = (CTRL_RATE * 6) // 100   # 60ms
+ATTACK_SHIFT_FAST = 2
+ATTACK_SHIFT_SLOW = 11
+RELEASE_SHIFT_MIN = 6
+RELEASE_SHIFT_MAX = 10
+ENV_FLOOR = 8
+ENV_FRAC = 8
 
-VIBRATO_CENTS = 15
-
-TONGUED, LEGATO = 0, 1
+VIB_HZ_TO_INC_Q16 = 366503876
+GLIDE_SHIFT = 5
 
 FAILURES = []
 
@@ -50,85 +55,115 @@ def check_true(name, cond, detail=""):
 
 
 def fast_sin(phase):
-    """fastmath.h fast_sin, close enough for the vibrato assertions."""
     return int(32767 * math.sin(2 * math.pi * (phase / 4294967296.0)))
 
 
+# ---------------------------------------------------------------------------
+# The port
+# ---------------------------------------------------------------------------
+
 class Breath:
     def __init__(self):
-        self.curved = 0
+        self.peak = 0
         self.effort = 0
-        self.breath = 0
-        self.chiff_noise = 0
-        self.chiff_ticks = 0
-        self.since_chiff = CHIFF_MIN_GAP
-        self.chiff_fired = False
-        self.stopped = False
+        self.env = 0
+        self.gate = False
+        self.struck = False
+        self.attack = ATTACK_SHIFT_FAST
         self.vib_cents = 0
+        self.vib_rate_q8 = 0
+        self.vib_cents_max = 0
         self.vib_phase = 0
-        self.artic = TONGUED
+
+    # -- inputs --------------------------------------------------------------
 
     def set_knob(self, knob, cv_add=0):
         v = max(0, min(4095, knob + cv_add))
         if v < BREATH_THRESH:
-            self.curved = 0
+            self.peak = 0
             self.effort = 0
-        else:
-            # The clamp matters: at v == 4095 this yields exactly 4096, one
-            # past full scale in Q12. See breath.cpp.
-            n = min(4095, ((v - BREATH_THRESH) << 12) // (4095 - BREATH_THRESH))
-            self.effort = n
-            # S-curve: smoothstep, then a lift that steepens only the middle.
-            # Flat at BOTH ends -- leaves silence gently and arrives gently.
-            # See breath.cpp for why three earlier curves were wrong.
-            # Multiply order matters: reducing the small factor first keeps
-            # this exactly monotonic AND inside int32. See breath.cpp.
-            inner = (n * (3 * 4096 - 2 * n)) >> 12
-            sm = min(4095, (n * inner) >> 12)
-            self.curved = min(4095, sm + ((sm * (4096 - sm)) >> 12))
-
-
-    def note_on(self):
-        if self.artic != TONGUED:
             return
-        if self.since_chiff < CHIFF_MIN_GAP:
-            return
-        self.chiff_ticks = CHIFF_TICKS
-        self.since_chiff = 0
-        self.chiff_fired = True
+
+        n = min(4095, ((v - BREATH_THRESH) << 12) // (4095 - BREATH_THRESH))
+        self.effort = n
+
+        # S-curve: smoothstep then a lift that steepens only the middle.
+        # The multiply order matters -- reducing the small factor first keeps
+        # this exactly monotonic AND inside int32. See breath.cpp.
+        inner = (n * (3 * 4096 - 2 * n)) >> 12
+        sm = min(4095, (n * inner) >> 12)
+        self.peak = min(4095, sm + ((sm * (4096 - sm)) >> 12))
+
+    def set_attack(self, x):
+        x = max(0, min(4095, x))
+        self.attack = ATTACK_SHIFT_FAST + (
+            ((ATTACK_SHIFT_SLOW - ATTACK_SHIFT_FAST) * x) >> 12)
+
+    def set_gate(self, on):
+        self.struck = on and not self.gate
+        self.gate = on
+
+    def set_vibrato(self, rate_q8, cents_q4):
+        self.vib_rate_q8 = rate_q8
+        self.vib_cents_max = cents_q4
+
+    # -- outputs -------------------------------------------------------------
+
+    def level(self):
+        return self.env >> ENV_FRAC
+
+    def sounding(self):
+        return self.env > 0
+
+    # -- the tick ------------------------------------------------------------
 
     def tick(self):
-        fired_this_tick = self.chiff_fired
+        target = self.peak << ENV_FRAC
 
-        if self.since_chiff < CHIFF_MIN_GAP:
-            self.since_chiff += 1
+        if self.gate:
+            if self.env < target:
+                d = target - self.env
+                step = d >> self.attack
+                if step == 0:
+                    step = 1
+                self.env = min(target, self.env + step)
+            elif self.env > target:
+                d = self.env - target
+                step = d >> self.attack
+                if step == 0:
+                    step = 1
+                self.env = max(target, self.env - step)
+        elif self.env > 0:
+            rel = RELEASE_SHIFT_MIN + (
+                ((RELEASE_SHIFT_MAX - RELEASE_SHIFT_MIN) * self.peak) >> 12)
+            step = self.env >> rel
+            if step == 0:
+                step = 1
+            self.env -= step
+            if self.env < (ENV_FLOOR << ENV_FRAC):
+                self.env = 0
 
-        if self.chiff_ticks > 0:
-            self.chiff_ticks -= 1
-            self.chiff_noise = (CHIFF_NOISE_Q15 * self.chiff_ticks) // CHIFF_TICKS
-        else:
-            self.chiff_noise = 0
-
-        if self.artic == LEGATO:
-            self.vib_phase = (self.vib_phase +
-                              int(5.0 * 4294967296.0 / CTRL_RATE)) & 0xFFFFFFFF
-            self.vib_cents = (fast_sin(self.vib_phase) * VIBRATO_CENTS) >> 15
+        if self.vib_cents_max > 0 and self.env > 0:
+            inc = (self.vib_rate_q8 * VIB_HZ_TO_INC_Q16) >> 16
+            self.vib_phase = (self.vib_phase + inc) & 0xFFFFFFFF
+            self.vib_cents = (fast_sin(self.vib_phase) * self.vib_cents_max) >> 15
         else:
             self.vib_phase = 0
             self.vib_cents = 0
 
-        if self.stopped:
-            self.breath = 0
-        else:
-            b = self.curved
-            if self.chiff_ticks > 0:
-                b -= (CHIFF_DIP_Q12 * self.chiff_ticks) // CHIFF_TICKS
-                if b < 0:
-                    b = 0
-            self.breath = b
 
-        if fired_this_tick:
-            self.chiff_fired = False
+def play(b, gate_ticks, total_ticks):
+    """Gate high for `gate_ticks`, then low. Returns the level each tick."""
+    out = []
+    for i in range(total_ticks):
+        b.set_gate(i < gate_ticks)
+        b.tick()
+        out.append(b.level())
+    return out
+
+
+def ms(ticks):
+    return 1000.0 * ticks / CTRL_RATE
 
 
 # ---------------------------------------------------------------------------
@@ -138,221 +173,210 @@ class Breath:
 def test_silence():
     print("silence")
     b = Breath()
-    b.set_knob(0)
-    b.tick()
-    check("knob at zero is silent", b.breath, 0)
-    b.set_knob(BREATH_THRESH - 1)
-    b.tick()
-    check("just below threshold is silent", b.breath, 0)
-    b.set_knob(BREATH_THRESH + 1)
-    b.tick()
-    check_true("just above threshold sounds", b.breath >= 0)
-    b.set_knob(4095)
-    b.tick()
-    check("full knob is full breath", b.breath, 4095)
+    b.set_knob(3000)
+    for _ in range(2000):
+        b.set_gate(False)
+        b.tick()
+    check("no gate, no sound", b.level(), 0)
+    check("...and nothing is sounding", b.sounding(), False)
 
-
-def test_stop():
-    print("chiff stop")
+    # And the tail must genuinely END rather than approach zero forever.
     b = Breath()
     b.set_knob(4095)
-    b.tick()
-    check("sounding before the stop", b.breath, 4095)
-    b.stopped = True
-    b.tick()
-    check("stop silences immediately", b.breath, 0)
-    b.stopped = False
-    b.tick()
-    check("release restores the air", b.breath, 4095)
+    out = play(b, 300, 60000)
+    tail = next((i for i in range(300, len(out)) if out[i] == 0), None)
+    check_true("the release reaches exact silence", tail is not None,
+               f"at {ms(tail):.0f}ms" if tail else "never")
 
 
-def test_no_pitch_change_from_main():
-    """The Main knob must NOT move the pitch anywhere in its travel.
-
-    It used to add an octave past about 70%, faking the overblow a waveguide
-    voice could not produce. That voice is gone, and on the current one the
-    jump was just a 12-semitone step landing in the middle of the vibrato
-    stage — reported from hardware as the vibrato boundary sounding "an octave
-    higher".
-
-    This test exists so the register cannot quietly come back: the knob is
-    level then vibrato, and vibrato is a wobble ABOUT the note, never a
-    transposition of it.
-    """
-    print("Main does not transpose")
+def test_a_tap_is_a_note():
+    print("a tap is a whole note")
     b = Breath()
-    assert not hasattr(b, "register"),         "the register switch is back -- see docs/DEVLOG.md v3.2.0"
-    check("Breath exposes no register", hasattr(b, "register"), False)
+    b.set_knob(3000)
+    b.set_attack(0)
+    out = play(b, 30, 30000)          # 10ms tap
+    peak = max(out)
+    check_true("a 10ms tap still reaches full level", peak > 2900,
+               f"peak {peak}")
+    end = next(i for i in range(len(out)) if out[i] == 0 and i > 30)
+    check_true("...and rings on after the tap", ms(end) > 100,
+               f"{ms(end):.0f}ms total")
 
 
-def test_chiff_is_an_edge():
-    """ChiffFired() must be true for exactly one tick.
-
-    If it were a level, Pulse Out 2 would sit high for the chiff's whole
-    duration and read as a long gate rather than a trigger.
-    """
-    print("chiff pulse")
+def test_hold_sustains():
+    print("a hold sustains")
     b = Breath()
-    b.set_knob(2000)
-    b.note_on()
-    fired = []
-    for _ in range(50):
-        fired.append(b.chiff_fired)
-        b.tick()
-    check("fires on exactly one tick", sum(1 for f in fired if f), 1)
-    check("...and it is the first", fired[0], True)
+    b.set_knob(3000)
+    b.set_attack(0)
+    out = play(b, 30000, 32000)       # 10s hold
+    held = out[9000:29000]
+    check_true("level is steady for the whole hold",
+               max(held) - min(held) <= 1, f"drift {max(held)-min(held)}")
+    check_true("...at the knob's peak", abs(held[-1] - b.peak) <= 1,
+               f"{held[-1]} vs peak {b.peak}")
 
 
-def test_chiff_rate_limit():
-    """A fast trill must not become a stutter."""
-    print("chiff rate limit")
+def test_swell():
+    """Moving the knob mid-note must move the note."""
+    print("swelling mid-note")
     b = Breath()
-    b.set_knob(2000)
-    # A 10Hz trill: a new note every 150 control ticks.
-    chiffs = 0
-    for note in range(12):
-        b.note_on()
-        for _ in range(CTRL_RATE // 20):     # 50ms between notes
-            if b.chiff_fired:
-                chiffs += 1
-            b.tick()
-    print(f"        12 notes at 20Hz -> {chiffs} chiffs")
-    check_true("rate limit thins the chiffs on a fast trill", chiffs < 12,
-               f"{chiffs} of 12")
-
-    # At a normal playing speed every note articulates.
-    b = Breath()
-    b.set_knob(2000)
-    chiffs = 0
-    for note in range(8):
-        b.note_on()
-        for _ in range(CTRL_RATE // 4):      # 250ms between notes
-            if b.chiff_fired:
-                chiffs += 1
-            b.tick()
-    check("every note articulates at ordinary speed", chiffs, 8)
-
-
-def test_legato_has_no_chiff():
-    print("articulation")
-    b = Breath()
-    b.artic = LEGATO
-    b.set_knob(2000)
-    b.note_on()
-    fired = False
-    for _ in range(40):
-        if b.chiff_fired:
-            fired = True
-        b.tick()
-    check("legato does not chiff", fired, False)
-
-    vs = []
+    b.set_knob(1200)
+    b.set_attack(0)
     for _ in range(3000):
+        b.set_gate(True)
         b.tick()
-        vs.append(b.vib_cents)
-    check_true("legato vibrates", max(vs) > 10 and min(vs) < -10,
-               f"range {min(vs)}..{max(vs)} cents")
+    quiet = b.level()
 
-    b.artic = TONGUED
-    b.tick()
-    check("tongued does not vibrate", b.vib_cents, 0)
+    b.set_knob(4095)
+    for _ in range(3000):
+        b.set_gate(True)
+        b.tick()
+    loud = b.level()
+    print(f"        knob 1200 -> {quiet}, then knob 4095 -> {loud}")
+    check_true("turning up swells the held note", loud > quiet * 2,
+               f"{quiet} -> {loud}")
+
+    # And back down again, so a swell is reversible.
+    b.set_knob(1200)
+    for _ in range(3000):
+        b.set_gate(True)
+        b.tick()
+    check_true("...and turning down eases it back",
+               abs(b.level() - quiet) < 100, f"back to {b.level()}")
 
 
-def test_curve_is_monotonic():
-    """More knob must always mean more of both curves."""
-    print("breath curve")
-    prev_l = prev_e = -1
-    bad = []
-    for k in range(4096):
+def test_louder_lasts_longer():
+    """The coupling that makes one knob feel like dynamics."""
+    print("louder lasts longer")
+    times = []
+    for knob in (800, 1600, 2600, 4095):
         b = Breath()
-        b.set_knob(k)
-        if b.curved < prev_l or b.effort < prev_e:
-            bad.append(k)
-        prev_l, prev_e = b.curved, b.effort
-    check("neither curve ever goes backwards", bad, [])
+        b.set_knob(knob)
+        b.set_attack(0)
+        out = play(b, 600, 90000)
+        end = next(i for i in range(600, len(out)) if out[i] == 0)
+        times.append((knob, b.peak, ms(end - 600)))
+        print(f"        knob {knob:4d} (peak {b.peak:4d}) -> "
+              f"release {ms(end-600):6.0f}ms")
+    check_true("release grows with level",
+               all(times[i][2] > times[i - 1][2] for i in range(1, len(times))),
+               "")
+    check_true("and the range is musically wide",
+               times[-1][2] > times[0][2] * 3,
+               f"{times[0][2]:.0f}ms -> {times[-1][2]:.0f}ms")
 
 
-def test_level_is_log():
-    """Level must rise FAST and flatten, not creep up linearly.
+def test_attack_shape():
+    print("attack shape from X")
+    times = []
+    for x in (0, 2048, 4095):
+        b = Breath()
+        b.set_knob(4095)
+        b.set_attack(x)
+        out = play(b, 30000, 30000)
+        t90 = next(i for i in range(len(out)) if out[i] > b.peak * 9 // 10)
+        times.append((x, ms(t90)))
+        print(f"        X {x:4d} -> 90% at {ms(t90):7.1f}ms")
+    check_true("X CCW is effectively a strike", times[0][1] < 30,
+               f"{times[0][1]:.0f}ms")
+    check_true("X CW is an audible swell", times[-1][1] > 300,
+               f"{times[-1][1]:.0f}ms")
 
-    Reported from hardware: "the knob is a bit less responsive than I'd like -
-    linear rather than the log it needs to be". v2.0 SQUARED the level, which
-    is the opposite curve -- it spends the whole sweep still getting louder.
-    """
+
+def test_level_curve():
     print("level curve shape")
+
     def level_at(pct):
         b = Breath()
         b.set_knob(int(4095 * pct / 100))
-        return b.curved
-
-    for pct in (10, 20, 30, 50, 70, 100):
-        print(f"        {pct:3d}% knob -> level {level_at(pct):4d}")
-
-    # An S-curve, so BOTH ends are flat and the middle is steep.
-    import math
+        return b.peak
 
     def db(pct):
         v = level_at(pct)
         return 20 * math.log10(v / 4095) if v else -99.0
 
-    # Bottom: leaves silence GENTLY. The v3.1 fifth power jumped 6dB per ten
-    # counts of knob just above the threshold, which is a switch not a fade.
+    for pct in (3, 10, 33, 50, 75, 100):
+        print(f"        {pct:3d}% knob -> peak {level_at(pct):4d} "
+              f"({db(pct):6.1f} dB)")
+
+    # An S: both ends flat, middle steep.
     check_true("the first few percent are quiet, not a switch",
                db(3) < -35, f"{db(3):.0f} dB at 3%")
     check_true("...but sound has clearly arrived by a tenth",
                db(10) > -30, f"{db(10):.0f} dB at 10%")
-
-    # Middle: steep enough not to feel sluggish.
     check_true("half volume by a third of the travel",
                db(33) > -8, f"{db(33):.0f} dB at 33%")
-
-    # Top: flat, so the last stretch is vibrato rather than loudness.
     check_true("the top quarter adds almost no level",
-               db(100) - db(75) > -1.0 and db(100) - db(75) < 1.0,
+               abs(db(100) - db(75)) < 1.0,
                f"{db(100)-db(75):+.1f} dB over the last quarter")
 
 
-def test_effort_keeps_climbing():
-    """Once level flattens, effort must keep going -- that is what gives the
-    top of the knob something to do."""
-    print("effort curve")
-    def eff(pct):
-        b = Breath()
-        b.set_knob(int(4095 * pct / 100))
-        return b.effort
-    for pct in (50, 70, 85, 100):
-        print(f"        {pct:3d}% knob -> effort {eff(pct):4d}")
-    check_true("effort is still rising through the top half",
-               eff(100) - eff(50) > 1600,
-               f"+{eff(100)-eff(50)} over the last half")
-    # The two must genuinely diverge, or there was no point splitting them.
-    b = Breath(); b.set_knob(int(4095 * 0.75))
-    check_true("level and effort diverge", b.curved - b.effort > 800,
-               f"level {b.curved} vs effort {b.effort}")
+def test_curve_is_monotonic():
+    """A volume control that sometimes goes backwards is not a volume control.
 
-    # Where the vibrato stage begins, as a fraction of the knob. It has to
-    # leave real room to grow in -- crammed into the last tenth it cannot be
-    # played deliberately.
-    from flutesim import VIB_ONSET
-    knob = next(k for k in range(4096)
-                if (lambda b: (b.set_knob(k), b.effort)[1])(Breath()) >= VIB_ONSET)
-    pct = 100 * knob / 4095
-    print(f"        vibrato begins at {pct:.0f}% of travel")
-    check_true("vibrato has most of the knob to grow in (20-45%)",
-               20 <= pct <= 45, f"{pct:.0f}%")
+    The obvious way to write this curve loses four bits before the second
+    multiply, which made it go DOWN in 108 places. See breath.cpp.
+    """
+    print("monotonicity")
+    prev = -1
+    bad = []
+    for k in range(4096):
+        b = Breath()
+        b.set_knob(k)
+        if b.peak < prev:
+            bad.append(k)
+        prev = b.peak
+    check("the level curve never goes backwards", bad, [])
+
+    prev = -1
+    bad = []
+    for k in range(4096):
+        b = Breath()
+        b.set_knob(k)
+        if b.effort < prev:
+            bad.append(k)
+        prev = b.effort
+    check("nor does effort", bad, [])
+
+
+def test_struck_is_an_edge():
+    """Struck() must be true for exactly the tick a note begins."""
+    print("strike edge")
+    b = Breath()
+    b.set_knob(3000)
+    fired = []
+    for i in range(200):
+        b.set_gate(10 <= i < 100)
+        b.tick()
+        fired.append(b.struck)
+    check("fires on exactly one tick", sum(1 for f in fired if f), 1)
+    check("...and it is the gate's rising edge", fired.index(True), 10)
+
+
+def test_no_pitch_change_from_main():
+    """The Main knob must never transpose. It sets level and vibrato depth.
+
+    A register switch lived on it until v3.2 -- a fossil of the v1 waveguide,
+    faking an overblow for a bore that had not existed for two rewrites -- and
+    it read as an octave jump in the middle of the vibrato stage.
+    """
+    print("Main does not transpose")
+    b = Breath()
+    check("Breath exposes no register", hasattr(b, "register"), False)
 
 
 def main():
     print("breathsim — model of breath.cpp\n")
     test_silence()
-    test_stop()
-    test_no_pitch_change_from_main()
-    test_chiff_is_an_edge()
-    test_chiff_rate_limit()
-    test_legato_has_no_chiff()
+    test_a_tap_is_a_note()
+    test_hold_sustains()
+    test_swell()
+    test_louder_lasts_longer()
+    test_attack_shape()
+    test_level_curve()
     test_curve_is_monotonic()
-    test_level_is_log()
-    test_effort_keeps_climbing()
+    test_struck_is_an_edge()
+    test_no_pitch_change_from_main()
 
     print()
     if FAILURES:

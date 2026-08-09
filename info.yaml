@@ -1,9 +1,9 @@
 draft: false
 Name: NIBBLE OCARINA
-short-description: Turns the Workshop System's four buttons into the finger holes of a flute you blow with a knob
+short-description: Turns the Workshop System's four buttons into the finger holes of a bowed flute you play with a switch
 Language: C++ (ComputerCard)
 Creator: Andy Jenkinson (uglifruit)
-Version: "3.3.0"
+Version: "4.0.0"
 Status: Released
 License: CC-BY-4.0
 repository: https://github.com/uglifruit/NibbleOcarina
@@ -17,7 +17,7 @@ contact:
 
 uf2:
   - path: UF2/ocarina.uf2
-    name: NIBBLE OCARINA 3.3.0
+    name: NIBBLE OCARINA 4.0.0
 
 tags:
   - flute
@@ -30,12 +30,14 @@ tags:
 
 summary: |
   Turns the Workshop System's four buttons into the finger holes of a flute you
-  blow with a knob.<br><br>
+  bow with a switch.<br><br>
 
   Patch one output of the FOUR VOLTAGES module into CV In 1, teach the card
   which voltage each button combination produces, and its buttons become
-  fingerings. The Main knob is your breath - turn it up and the instrument
-  speaks, turn it down and it stops. Push further and it starts to sing.<br><br>
+  fingerings. The momentary switch is the BOW - tap it for a struck note, hold
+  it to sustain, and while you hold it the Main knob swells the note and the
+  buttons re-finger it without ever re-attacking. Pulse In 1 does the same, so
+  a sequencer plays it the way your finger does.<br><br>
 
   The tone is a pure sine and the expression is VIBRATO. Turn the Main knob up
   and it comes quickly to full volume; keep going and vibrato grows on top - so
@@ -59,13 +61,13 @@ summary: |
   SILENCE IS THE KNOB, NOT THE FINGERING - and that is forced by the hardware
   rather than chosen. Four Voltages has no rest voltage - let go of every button
   and the output stays where it was, so "no holes covered" is not a state it can
-  express and cannot mean silence. On a real ocarina you stop by not blowing,
-  which is exactly what the Main knob does here.<br><br>
+  express and cannot mean silence. Here the card is simply silent until you bow
+  it, which is how a struck or bowed instrument works anyway.<br><br>
 
   RELEASING A FINGER IS A NOTE - come off A+B onto A and you hear A. That is
   what makes trilling work - hold one hole, waggle another, and you get a clean
   alternation up to about sixteen a second. Switch UP is the trill mode - it
-  glides between the two pitches instead of articulating each one.<br><br>
+  glides between the two pitches instead of stepping between them.<br><br>
 
   TEN COMBINATIONS - four singles and six pairs. Four buttons can express
   fifteen, and the card used to walk all fifteen and work out at the end whether
@@ -113,9 +115,9 @@ panel:
       type: audio
       description: Used as a CV rather than as audio - it offsets the X knob, so the vibrato character, the level tilt and the wavefold can all be modulated together. Same doubling as Audio In 1, and likewise only active when something is patched.
     - id: PulseIn1
-      name: Tongue
+      name: The bow
       type: pulse
-      description: Re-articulates the current note without changing the fingering, which is how you play repeated notes on one hole. Fires a chiff in tongued articulation; in legato it is deliberately ignored, because a slur that re-articulates is not a slur.
+      description: THE BOW, exactly like the momentary switch - while this gate is high a note sounds, and when it falls the note releases. A short trigger gives a struck note and a long gate gives a sustained one, so a sequencer plays the card the same way a finger does. Either source sounds the instrument; whichever is active wins.
     - id: PulseIn2
       name: Unused
       type: pulse
@@ -128,7 +130,7 @@ panel:
     - id: CVOut2
       name: Level
       type: cv
-      description: The level as a control voltage, 0 to 5V, after the knob curve, after X's tilt and after the articulation dip - so it tracks exactly what you are hearing rather than just where the knob is. The obvious patch is into a filter or VCA so something else in the rack follows the phrasing.
+      description: The note's envelope as a control voltage, 0 to 5V - the attack, the sustain while the bow is held, and the release tail, after X's tilt. It tracks exactly what you are hearing rather than where the knob is, so a filter or VCA patched from it follows the phrasing note by note.
     - id: AudioOut1
       name: Flute
       type: audio
@@ -138,9 +140,9 @@ panel:
       type: audio
       description: The SAME oscillator as Audio Out 1, wavefolded - a triangle reflection that adds a pair of odd harmonics per fold, so it thickens into something reedy rather than into fuzz. X sets the depth, from identical to Audio Out 1 at fully anticlockwise to hollow and third-heavy at clockwise. Because both outputs share one oscillator they are always at the same pitch and phase, so mixing or crossfading between them cannot comb filter.
     - id: PulseOut1
-      name: Note trigger
+      name: Gate
       type: pulse
-      description: A short blip every time the fingering changes, and on a tongue from Pulse In 1. A trigger rather than a gate, so envelopes elsewhere in the rack fire in time with the card's own note changes.
+      description: A gate, high for exactly as long as a note is audible including its release tail - so an envelope elsewhere can follow the whole note rather than just its beginning. It follows the ENVELOPE, not the switch, so a tapped note holds this high for its full ring-out.
     - id: PulseOut2
       name: Square
       type: pulse
@@ -149,25 +151,25 @@ panel:
 controls:
   switch:
     up:
-      name: Legato
-      description: "Glide between notes instead of stepping, with a gentle vibrato of about fifteen cents at five hertz. No chiff. This is the trill mode - under tongued articulation a fast trill fires a chiff per note and becomes a stutter, whereas legato slides between the two pitches, which is what a trill actually sounds like on a wind instrument. HOLD for one second to see how close the last calibration came to fifteen combinations; keep holding to three seconds to enter tuning."
+      name: Portamento toggle
+      description: "Flick UP and let go to toggle PORTAMENTO on or off - LED 4 shows which. Holding it does nothing at all, and that is deliberate - a switch position you hold while playing cannot also carry a timed gesture, a rule this card learned twice the hard way. With portamento on, changing the fingering glides to the new pitch in about seventy milliseconds instead of stepping, and while the bow is held that glide happens without re-attacking, the way a finger moves on a bowed string."
     middle:
-      name: Tongued
-      description: Every new fingering starts with a chiff - a short burst of extra noise and a momentary dip in the air, which is physically what a tongue stroke does. This is what makes repeated notes articulate rather than smear into one another. There is a minimum interval between chiffs, so ordinary playing articulates every note while a deliberate trill smooths into a single gesture.
+      name: Rest
+      description: The switch's resting position. Nothing sounds here - the card is silent until you bow it, either by holding the switch down or by sending a gate to Pulse In 1.
     down:
-      name: Chiff stop / Calibrate
-      description: "Momentary mute, and a real stop rather than a gate close - it cuts the air AND damps the bore, so the sound ends in about fifty milliseconds instead of ringing out. Use it to cut a phrase or play hard staccato; releasing it re-attacks cleanly. HOLD for two seconds to calibrate, from anywhere including mid-announcement, which matters because hunting for a fifteen-combination calibration means doing it repeatedly. How it ends is on the LEDs: LEDs fading with both bottom lights blinking three times means all fifteen are usable; a four-LED bar with one long blink means it fell back to ten and the bar says how close it came; the two COLUMNS alternating fast means it FAILED, which in practice means nothing is patched into CV In 1 - the previous calibration is kept either way."
+      name: The bow
+      description: "THE BOW. The card is silent until you sound it - TAP for a struck note that attacks and rings out, or HOLD to sustain for as long as you like. While held, turning the Main knob swells or eases the note in real time, and changing the fingering GLIDES to the new pitch without re-attacking, so a phrase can be shaped and re-fingered under one continuous bow. Pulse In 1 does exactly the same thing. There is no hold gesture on this switch and no way to reach calibration from it - calibration runs once at power-on, and you reset to get back to it."
     tap:
-      name: Capture / Leave tune
-      description: During calibration, captures the combination you are holding - a tap while the voltage is still moving is rejected with a flash rather than silently recording a mid-slew reading. In tuning, leaves and keeps whatever offsets you have set. In normal play it does nothing, since the chiff stop is the momentary action and re-articulation lives on Pulse In 1.
+      name: Capture
+      description: During calibration, captures the combination you are holding - a tap while the voltage is still moving is rejected with a flash rather than silently recording a mid-slew reading. In normal play a tap is simply a very short bow stroke, which is what gives a struck note.
   knobs:
     -
       main:
         name: Breath
-        description: "The card's only way to be silent - below about seven percent of travel the instrument does not sound at all. It does two things in sequence: level follows an S-curve that leaves silence gently, rises steeply through the middle and flattens off around half travel, and past that point the knob stops adding volume and starts adding VIBRATO instead. So the bottom half is how loud and the top half is how much it sings, and a phrase can move from quiet and steady through loud and steady into loud and singing on one control. Nothing in its travel changes the PITCH - a register switch lived here until v3.2, a leftover from an older voice, and it read as an octave jump in the middle of the vibrato. The octave is chosen with X during calibration instead. DURING CALIBRATION this knob becomes fine tune, plus or minus one hundred cents."
+        description: "The card's only way to be silent - below about seven percent of travel the instrument does not sound at all. It sets the note's PEAK and, coupled to it, how long the note takes to die away - a loud note rings for over a second, a quiet one is gone in under a tenth. One gesture, two musical consequences, which is what makes it feel like dynamics rather than a fader. The peak follows an S-curve that leaves silence gently, rises steeply through the middle and flattens off around half travel, and past that point the knob stops adding volume and starts adding VIBRATO instead. So the bottom half is how loud and the top half is how much it sings, and a phrase can move from quiet and steady through loud and steady into loud and singing on one control. Nothing in its travel changes the PITCH - a register switch lived here until v3.2, a leftover from an older voice, and it read as an octave jump in the middle of the vibrato. The octave is chosen with X during calibration instead. DURING CALIBRATION this knob becomes fine tune, plus or minus one hundred cents."
       x:
         name: Timbre
-        description: "What KIND of vibrato the Main knob adds, morphing through three characters: fully anticlockwise is fast and wide (8Hz, 50 cents) which is dramatic, the centre is fast and tight (8Hz, 10 cents) which is nervous and close, and fully clockwise is slow and wide (3Hz, 50 cents) which is operatic. Turning it up also tilts the level a little and opens the wavefolder on Audio Out 2, so the clockwise end is slower-vibrato, slightly louder and more harmonically complex at once. The fold deliberately stops at half its available range - past that point the harmonics dip before rising again, and a knob that gets brighter then duller reads as broken."
+        description: "Two jobs at once. It sets the ATTACK SHAPE, from a three-millisecond strike at fully anticlockwise to an eight-hundred-millisecond swell at fully clockwise. And it sets what KIND of vibrato the Main knob adds, morphing through three characters: fully anticlockwise is fast and wide (8Hz, 50 cents) which is dramatic, the centre is fast and tight (8Hz, 10 cents) which is nervous and close, and fully clockwise is slow and wide (3Hz, 50 cents) which is operatic. Turning it up also tilts the level a little and opens the wavefolder on Audio Out 2, so the clockwise end is slower-vibrato, slightly louder and more harmonically complex at once. The fold deliberately stops at half its available range - past that point the harmonics dip before rising again, and a knob that gets brighter then duller reads as broken."
       y:
         name: Scale
         description: "One of twelve scales, ordered dark to bright from fully anticlockwise, shown as a bar on the LEDs while you turn it: Phrygian, Hirajoshi, Harmonic Minor, Natural Minor, Minor Pentatonic, m7 Arpeggio, Dorian, Major Pentatonic, Ionian (Major), Maj7 Arpeggio, Whole Tone, Chromatic. Because the combinations are DEGREES rather than pitches, the scale also sets the range - a four-note arpeggio spreads them over three octaves while Chromatic packs them into just over one. The two arpeggios are wider than the bore can reach, so their top degree or two repeat the highest note rather than going out of tune. In TUNING this becomes coarse tune, plus or minus twelve semitones."
@@ -178,6 +180,6 @@ controls:
         - id: LED0-3
           description: "In play, the fingering you are holding - the 2x2 block is laid out like the Four Voltages buttons, so the panel mirrors your fingers. During calibration, the combination to hold next, blinking, with already-visited buttons glowing dimly. After a fall back to ten, a four-LED bar showing how close the patch came to fifteen."
         - id: LED4
-          description: "In play, a breath meter. During calibration, part of the phase marker - lit for singles, lit with LED 5 for triples, blinking fast with it for all four, so more light means more fingers."
+          description: "In play, the PORTAMENTO indicator - the one thing about the card's state you cannot hear until the next note. During calibration it marks the four singles."
         - id: LED5
           description: "In play, the mode indicator - dimly lit means all fifteen combinations are live, dark means ten. This is the one thing worth knowing mid-performance, because it tells you whether a third finger does anything. During calibration it marks pairs."

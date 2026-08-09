@@ -14,20 +14,26 @@
 //   CV In 2      pitch offset, +/- semitones
 //   Audio In 1   offsets the Main knob   (used as CV)
 //   Audio In 2   offsets the X knob      (used as CV)
-//   Pulse In 1   tongue: re-articulates the current note
+//   Pulse In 1   THE BOW, same as the switch: gate high sounds a note
 //
-//   Main         level, then VIBRATO DEPTH   (FINE TUNE during calibration)
-//                NO pitch change anywhere in its travel
-//   X            vibrato character + level tilt + fold  (OCTAVE during cal)
+//   Main         note peak + release length, then VIBRATO DEPTH
+//                                             (FINE TUNE during calibration)
+//   X            attack shape + vibrato character + fold  (OCTAVE during cal)
 //   Y            scale                       (COARSE TUNE during calibration)
 //
-//   Switch UP    legato: glide — and nothing else, ever
-//   Switch MID   tongued
-//   Switch DOWN  mute                        DOWN held 2s -> calibrate
+//   Switch UP    toggle portamento on/off (shown on LED 4), then let go
+//   Switch MID   rest position
+//   Switch DOWN  THE BOW — tap for a struck note, hold to sustain
 //
-// Calibration drones a reference note the whole time it runs; Y and Main tune
-// it and X picks its octave while you teach the fingering. Calibration reads
-// only CV In 1 and the switch, so the three knobs are free for this.
+// Calibration runs once at power-on and has NO gesture: the switch is a
+// playing control now and cannot carry one. Reset to recalibrate. It drones a
+// reference note throughout; Y and Main tune it and X picks its octave while
+// you teach the fingering.
+//
+// THE INSTRUMENT IS BOWED. It is silent until the switch is held or Pulse In 1
+// goes high. A tap is a struck note; a hold sustains for as long as you hold
+// it. While held, moving Main swells the note and changing the fingering
+// glides to the new pitch without re-attacking.
 //
 //   Audio Out 1  the tone, a sine
 //   Audio Out 2  the same tone, wavefolded as X rises
@@ -189,9 +195,10 @@ public:
 		{
 			if (++bootPhase_ == kBootWindowSamples)
 			{
-				// Swallow the release of whatever the switch is already doing.
-				downFired_ = (SwitchVal() == Switch::Down);
-				splash_    = kSplashSamples;
+				// Swallow whatever the switch is already doing, so a card that
+				// powers up with it held does not fire a note on release.
+				gateLatched_ = (SwitchVal() == Switch::Down);
+				splash_      = kSplashSamples;
 			}
 			AudioOut1(0);
 			AudioOut2(0);
@@ -227,13 +234,11 @@ public:
 		// Pulse Out 2 is the tone as a square, straight off the oscillator.
 		PulseOut2(voice_.Square());
 
-		// Pulse Out 1 is a note-change TRIGGER, not a gate: a fixed-width blip
-		// each time the fingering changes, so it can fire envelopes elsewhere
-		// in time with the card's own note changes.
-		if (pulseTimer_ > 0)
+		// Pulse Out 2's blip. Pulse Out 1 is a level, set at control rate.
+		if (pulse2Timer_ > 0)
 		{
-			pulseTimer_--;
-			if (pulseTimer_ == 0) PulseOut1(false);
+			pulse2Timer_--;
+			if (pulse2Timer_ == 0) PulseOut2(false);
 		}
 	}
 
@@ -270,23 +275,21 @@ private:
 		xNow_ = xKnob;
 
 		breath_.SetKnob(KnobVal(Knob::Main), mainCv);
-		breath_.SetArticulation(SwitchVal() == Switch::Up ? Articulation::Legato
-		                                                  : Articulation::Tongued);
+		breath_.SetAttack(xNow_);
 
-		// The chiff stop damps the BORE as well as cutting the air. Zeroing the
-		// breath alone leaves the resonator ringing for its full decay, which
-		// is the one thing a stop exists to prevent — it would be a gate close
-		// wearing a stop's name.
-		const bool stopped = (SwitchVal() == Switch::Down);
-		if (stopped != stopLast_)
+		// THE BOW. Either source sounds the instrument, and they behave
+		// identically: a short press is a struck note, a long one sustains.
+		// So a sequencer gate plays the card exactly as a finger does.
+		//
+		// gateLatched_ swallows a switch that was already held at boot, so the
+		// card cannot fire a note on the release of a switch nobody pressed.
+		bool gate = (SwitchVal() == Switch::Down) || PulseIn1();
+		if (gateLatched_)
 		{
-			stopLast_ = stopped;
-			breath_.SetStopped(stopped);
-			if (stopped) voice_.Mute(); else voice_.Unmute();
+			if (!gate) gateLatched_ = false;   // released; arm normally
+			gate = false;
 		}
-
-		// Pulse In 1 re-articulates without changing the fingering.
-		if (PulseIn1RisingEdge()) Retrigger();
+		breath_.SetGate(gate);
 
 		// Vibrato comes from BOTH knobs: Main sets how much, X sets what kind.
 		// Set before Tick() so the oscillator advances with this tick's values.
@@ -295,8 +298,8 @@ private:
 
 		breath_.Tick();
 
-		// Level: the breath curve, plus X's small tilt, minus the chiff dip.
-		int32_t lvl = breath_.BreathQ12();
+		// Level: the envelope, plus X's small tilt.
+		int32_t lvl = breath_.LevelQ12();
 		if (lvl > 0)
 		{
 			lvl += XVolumeBoost(xNow_);
@@ -304,83 +307,72 @@ private:
 		}
 		level_ = lvl;
 
+		// Pulse Out 1 is the gate: high for exactly as long as a note sounds,
+		// including its release tail, so an envelope elsewhere can follow the
+		// whole note rather than just its start.
+		PulseOut1(breath_.Sounding());
+
 		voice_.SetFold(FoldFor(xNow_));
 
 		ReadScale();
 		UpdatePitch();
 		UpdateCVs();
+
+		// One blip per struck note, for anything that wants the attack.
+		if (breath_.Struck())
+		{
+			PulseOut2(true);
+			pulse2Timer_ = kSampleRate / 500;      // 2ms
+		}
 	}
 
 	// -----------------------------------------------------------------------
 	// Gestures
 	// -----------------------------------------------------------------------
 
-	/// One switch, four meanings, and a staged hold on UP.
-	///
-	/// The tap fires on PRESS, not release. Release-firing is "correct" in the
-	/// sense that a hold never also fires a tap, and it is unplayable: the
-	/// event arrives when you let go, so every capture lands late. The cost is
-	/// that beginning a hold also fires one tap, which the learn machine
-	/// absorbs deliberately.
-	void __not_in_flash_func(ReadSwitch)()
-	{
-		const Switch sw = SwitchVal();
-		tapped_ = false;
-
-		if (sw == Switch::Down)
-		{
-			if (downFired_) { downTicks_ = 0; return; }
-			if (downTicks_ == 0) tapped_ = true;
-			if (downTicks_ < kHoldCalTicks) downTicks_++;
-			if (downTicks_ >= kHoldCalTicks && !downFired_)
-			{
-				downFired_ = true;
-				// Live from ANYWHERE, including mid-announcement: hunting for a
-				// 15-mode calibration means doing this repeatedly, and waiting
-				// for a flash to finish first would make that a chore.
-				if (ui_ == UiMode::Learn) AbortLearn(); else EnterLearn();
-			}
-			return;
-		}
-
-		downTicks_ = 0;
-		downFired_ = false;
-
-		// SWITCH UP IS LEGATO AND NOTHING ELSE. No timer, no stages, no hidden
-		// gesture — holding it is how you play a slur, and a playing position
-		// cannot also be a hold gesture.
-		//
-		// v2.0 put the gap bar on a 1s up-hold and TUNE on a 3s one. Both fire
-		// while you are simply playing legato, so a slur lasting three seconds
-		// dropped the card into tune mode — LEDs cycling, drone running, and no
-		// way out, because tune exits on a TAP and a tap means switch DOWN,
-		// which is the mute you are not holding. Reported from hardware as
-		// "gliss mode seems to hang up".
-		//
-		// The general rule this cost us: never overload a switch position that
-		// is ALSO a continuous playing mode. Momentary positions can carry
-		// gestures; held ones cannot.
-	}
-
 	/// The scale root, as chosen by the X knob during calibration.
 	int32_t BaseNote() const { return kOctaveBase[octave_]; }
 
+	/// Switch UP toggles portamento, on the way UP only.
+	///
+	/// A TOGGLE rather than a held mode, because up is a position you flick
+	/// through rather than one you play in: reaching it turns portamento on,
+	/// reaching it again turns it off, and LED 4 says which. Holding it does
+	/// nothing at all.
+	///
+	/// This is the third arrangement of this control and the first that does
+	/// not fight the player. v2.0 made UP a held legato mode AND hung a staged
+	/// 1s/3s gesture on it, so a three-second slur dropped the card into tune
+	/// mode with no way out. The rule that cost: a switch position you hold
+	/// while playing cannot also carry a gesture. Up is now momentary in
+	/// practice — flick and release.
+	void __not_in_flash_func(ReadSwitch)()
+	{
+		const bool up = (SwitchVal() == Switch::Up);
+		// Only while playing: during a calibration the switch is the capture
+		// tap and the up position is not being used, so a stray flick should
+		// not silently change a setting the player cannot see from there.
+		if (up && !upLast_ && ui_ == UiMode::Play) portamento_ = !portamento_;
+		upLast_ = up;
+
+		// The capture tap for calibration is the same switch, pressed. It fires
+		// on the PRESS edge, not the release: release-firing never
+		// double-fires, and is unplayable, because every capture lands when you
+		// let go rather than when you meant it.
+		const bool down = (SwitchVal() == Switch::Down);
+		tapped_ = (down && !downLast_);
+		downLast_ = down;
+	}
+
+	/// A new fingering arrived.
+	///
+	/// It does NOT start a note — the bow does that. Changing fingering while
+	/// a note is sounding simply moves its pitch, which is how a bowed string
+	/// behaves and is what makes held-and-refingered phrases possible.
 	void NoteOn(int8_t combo)
 	{
 		combo_ = combo;
-		breath_.NoteOn();
 		pitchDirty_ = true;
-
-		// Pulse Out 1: a trigger on every note change.
-		PulseOut1(true);
-		pulseTimer_ = kSampleRate / 500;      // 2ms
-	}
-
-	void Retrigger()
-	{
-		breath_.NoteOn();
-		PulseOut1(true);
-		pulseTimer_ = kSampleRate / 500;
 	}
 
 	// -----------------------------------------------------------------------
@@ -405,8 +397,7 @@ private:
 	void __not_in_flash_func(UpdatePitch)()
 	{
 		const int32_t vibQ4 = breath_.VibratoCentsQ4();
-		const bool gliding = (breath_.Art() == Articulation::Legato)
-		                   && (glideSemiQ8_ != targetSemiQ8_);
+		const bool gliding = portamento_ && (glideSemiQ8_ != targetSemiQ8_);
 
 		// The glide has to keep stepping toward its target across many ticks,
 		// so "nothing changed" is not a reason to stop — it is the normal state
@@ -462,7 +453,7 @@ private:
 		const int32_t targetSemiQ8 = (semi << 8);
 		targetSemiQ8_ = targetSemiQ8;
 
-		if (breath_.Art() == Articulation::Legato && glideSemiQ8_ != 0)
+		if (portamento_ && glideSemiQ8_ != 0)
 		{
 			// slew_exact and NOT slew: the plain shift stalls short of its
 			// target, which on a pitch is a permanent detune rather than a
@@ -853,14 +844,13 @@ private:
 		// The fingering, mirrored on the block.
 		SetRow(ComboLedMask(levels_.Current()), kLedDim, 0);
 
-		// LED 4 is a level meter.
-		const int32_t air = breath_.BreathQ12();
-		LedBrightness(4, static_cast<uint16_t>((air * kLedFull) >> 12));
+		// LED 4 is the PORTAMENTO indicator — the one thing about the card's
+		// state you cannot hear until you play the next note.
+		LedBrightness(4, portamento_ ? kLedDim : 0);
 
-		// LED 5 used to report which combo mode was live. There is only one
-		// now, so it carries the calibration warning instead: dimly lit if two
-		// learned levels came out too close to tell apart reliably.
-		LedBrightness(5, levels_.CollisionCount() ? kLedGlow : 0);
+		// LED 5 is a level meter, following the envelope, so the panel shows
+		// the note's shape as it rises and decays.
+		LedBrightness(5, static_cast<uint16_t>((level_ * kLedFull) >> 12));
 	}
 
 	// -----------------------------------------------------------------------
@@ -884,10 +874,11 @@ private:
 	uint8_t    collisions_ = 0;
 	int32_t    captured_[kNumLevels] = {};
 
-	bool    tapped_    = false;
-	bool    stopLast_  = false;
-	int32_t downTicks_ = 0;
-	bool    downFired_ = false;
+	bool    upLast_      = false;
+	bool    downLast_    = false;
+	bool    tapped_      = false;
+	bool    portamento_  = false;
+	bool    gateLatched_ = false;
 
 	int32_t  level_      = 0;   ///< what the voice is given, after every offset
 	int32_t  xNow_       = 0;   ///< X knob after its CV offset
@@ -907,7 +898,7 @@ private:
 	int32_t cvPitchLast_ = -99999;
 	int32_t cvEnvLast_   = -99999;
 	int32_t scaleShow_   = 0;
-	int32_t pulseTimer_  = 0;
+	int32_t pulse2Timer_ = 0;
 };
 
 int main()
