@@ -49,24 +49,48 @@ void Breath::SetKnob(int32_t knob, int32_t cvAdd)
 		// EFFORT is linear — it is simply how far the knob has been turned.
 		effort_ = n;
 
-		// LEVEL rises very fast, because LOUDNESS IS LOGARITHMIC and this
-		// curve has to fight that.
+		// LEVEL is an S-CURVE: flat at both ends, steep through the middle.
 		//
-		// The history is worth keeping, because two plausible curves were both
-		// wrong. v2.0 SQUARED the value: that is the opposite of what is
-		// wanted, spending the whole sweep still getting louder. v2.1 used a
-		// cubic 1-(1-n)^3, which looks fast on paper — 84% of full amplitude by
-		// half travel — but AMPLITUDE is not loudness: in dB it was still only
-		// -12dB (about half as loud) at a quarter of the travel, which is what
-		// "the ramp seems very slow" was describing.
+		// Three curves have been wrong here in three different ways, so the
+		// history is worth keeping.
 		//
-		// A fifth power of the same shape gets to roughly half perceived volume
-		// by an eighth of the travel and full by about a third, leaving the
-		// remaining two thirds for vibrato. Two extra multiplies.
-		const int32_t inv = 4096 - n;
-		const int32_t i2 = (inv * inv) >> 12;
-		const int32_t i4 = (i2 * i2) >> 12;
-		curved_ = 4096 - ((i4 * inv) >> 12);
+		//   v2.0  SQUARED. The opposite of what is wanted — it spends the whole
+		//         sweep still getting louder and only arrives at the very end.
+		//
+		//   v2.1  cubic 1-(1-n)^3. Looks fast (84% of full AMPLITUDE by half
+		//         travel) but amplitude is not loudness: in dB it was still
+		//         only -12dB at a quarter of the travel. "Very slow ramp".
+		//
+		//   v3.1  fifth power. Fixed the slowness by being steepest exactly at
+		//         the bottom — 6dB per ten counts of knob just above the
+		//         threshold, which is a switch rather than a fade. Reported as
+		//         not going cleanly to silence.
+		//
+		// What all three missed is that BOTH ends matter. A curve that leaves
+		// silence gently has to be flat near zero, and one that does not feel
+		// sluggish has to be steep in the middle — that is a smoothstep,
+		// n^2*(3-2n), which is flat at zero AND at full.
+		//
+		// The `lift` term then pulls the whole thing up without touching those
+		// two flat ends: s*(1-s) is zero at both extremes and largest in the
+		// middle, so adding it steepens the middle only. That recovers the
+		// speed the plain smoothstep gives away, at the cost of two multiplies.
+		// The multiply order is NOT free to rearrange.
+		//
+		// The obvious `n2 = (n*n)>>12; sm = (n2 * (3-2n))>>12` throws away four
+		// bits before the second multiply, and the rounding that costs makes
+		// the curve NON-MONOTONIC: 108 places where turning the knob up made
+		// the level go DOWN by a count or two. Inaudible individually, but it
+		// means the control does not always do what it says.
+		//
+		// Shifting once at the end would be exact, but n*n*(3-2n) peaks at
+		// 2.06e11 and overflows int32. Reordering so the small factor is
+		// reduced first keeps the peak intermediate at 16.7M and is exactly
+		// monotonic across all 4096 inputs. Verified in tools/breathsim.py.
+		const int32_t inner = (n * (3 * 4096 - 2 * n)) >> 12;
+		int32_t sm = (n * inner) >> 12;
+		if (sm > 4095) sm = 4095;
+		curved_ = sm + ((sm * (4096 - sm)) >> 12);
 		// The curve reaches exactly 4096 at full travel, one past the 0..4095
 		// this is documented to return. Harmless in today's arithmetic, but an
 		// earlier curve had the identical off-by-one and that one did clip the

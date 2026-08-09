@@ -142,6 +142,12 @@ then arrived abruptly — reported from hardware as an audible step, and notably
 absent in portamento mode because a glide keeps the cents term non-zero. If you
 add another modulation source, it is Q4 too.
 
+**The level curve is an S, and its multiply order is load-bearing.** Reducing
+the small factor first (`n * ((n*(3-2n))>>12) >> 12`) is both exactly monotonic
+and inside int32; the obvious `(n*n)>>12` form loses four bits and goes
+BACKWARDS in 108 places, and a single end shift overflows. `breathsim.py`
+asserts zero backward steps.
+
 **Loudness is logarithmic and the level curve has to fight that.** A curve that
 looks fast in amplitude is not fast to the ear: the cubic that preceded the
 current fifth power reached 84% of full amplitude by half travel and was still

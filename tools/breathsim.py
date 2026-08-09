@@ -19,7 +19,7 @@ import sys
 
 CTRL_RATE = 3000
 
-BREATH_THRESH = 120
+BREATH_THRESH = 60
 
 CHIFF_TICKS       = CTRL_RATE // 80          # ~12ms
 CHIFF_NOISE_Q15   = 14000
@@ -78,12 +78,14 @@ class Breath:
             # past full scale in Q12. See breath.cpp.
             n = min(4095, ((v - BREATH_THRESH) << 12) // (4095 - BREATH_THRESH))
             self.effort = n
-            # Fifth power: loudness is logarithmic, so the curve has to be very
-            # fast in amplitude to feel merely quick to the ear. See breath.cpp.
-            inv = 4096 - n
-            i2 = (inv * inv) >> 12
-            i4 = (i2 * i2) >> 12
-            self.curved = min(4095, 4096 - ((i4 * inv) >> 12))
+            # S-curve: smoothstep, then a lift that steepens only the middle.
+            # Flat at BOTH ends -- leaves silence gently and arrives gently.
+            # See breath.cpp for why three earlier curves were wrong.
+            # Multiply order matters: reducing the small factor first keeps
+            # this exactly monotonic AND inside int32. See breath.cpp.
+            inner = (n * (3 * 4096 - 2 * n)) >> 12
+            sm = min(4095, (n * inner) >> 12)
+            self.curved = min(4095, sm + ((sm * (4096 - sm)) >> 12))
 
 
     def note_on(self):
@@ -286,14 +288,28 @@ def test_level_is_log():
     for pct in (10, 20, 30, 50, 70, 100):
         print(f"        {pct:3d}% knob -> level {level_at(pct):4d}")
 
-    check_true("half the travel is already near full level",
-               level_at(50) > 3200, f"{level_at(50)} of 4096")
-    check_true("a third of the travel is well on the way",
-               level_at(33) > 2200, f"{level_at(33)} of 4096")
-    # And the top half must NOT be where the loudness lives.
-    check_true("the top half adds little level",
-               level_at(100) - level_at(50) < 900,
-               f"+{level_at(100)-level_at(50)} over the last half")
+    # An S-curve, so BOTH ends are flat and the middle is steep.
+    import math
+
+    def db(pct):
+        v = level_at(pct)
+        return 20 * math.log10(v / 4095) if v else -99.0
+
+    # Bottom: leaves silence GENTLY. The v3.1 fifth power jumped 6dB per ten
+    # counts of knob just above the threshold, which is a switch not a fade.
+    check_true("the first few percent are quiet, not a switch",
+               db(3) < -35, f"{db(3):.0f} dB at 3%")
+    check_true("...but sound has clearly arrived by a tenth",
+               db(10) > -30, f"{db(10):.0f} dB at 10%")
+
+    # Middle: steep enough not to feel sluggish.
+    check_true("half volume by a third of the travel",
+               db(33) > -8, f"{db(33):.0f} dB at 33%")
+
+    # Top: flat, so the last stretch is vibrato rather than loudness.
+    check_true("the top quarter adds almost no level",
+               db(100) - db(75) > -1.0 and db(100) - db(75) < 1.0,
+               f"{db(100)-db(75):+.1f} dB over the last quarter")
 
 
 def test_effort_keeps_climbing():

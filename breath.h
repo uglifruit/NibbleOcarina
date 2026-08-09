@@ -35,11 +35,15 @@ namespace nib {
 
 /// Below this knob position the instrument is silent.
 ///
-/// ~3% of travel. Was 300 (~7%), which combined with the level curve to make
-/// the instrument take an uncomfortably long turn to arrive — reported from
-/// hardware as "the ramp from silence to sound still seems very slow". Still
-/// wide enough to find "off" by feel without looking.
-constexpr int32_t kBreathThresh = 120;
+/// ~1.5% of travel, and small on purpose. It exists ONLY to give the knob a
+/// definite "off" that can be found by feel — the gentle approach to silence
+/// is the S-curve's job now, not this.
+///
+/// It was 300 (~7%) when the curve was steepest at the bottom, so the deadband
+/// was doing double duty as a mute AND as a buffer against the sound slamming
+/// on. With an S-curve that is dead travel: the first audible sound now arrives
+/// at about 3% of the knob rather than 4.5%.
+constexpr int32_t kBreathThresh = 60;
 
 // ---------------------------------------------------------------------------
 // Articulation

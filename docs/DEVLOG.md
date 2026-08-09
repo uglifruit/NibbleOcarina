@@ -5,6 +5,52 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v3.3.0 — an S-curve, because both ends matter
+
+> "Doesn't seem to cleanly go to silence. Can we have an S shaped ramp from
+> silence?"
+
+The fifth-power curve from v3.1 fixed the slow ramp by being steepest **exactly
+at the bottom** — measured, 6dB per ten counts of knob just above the threshold.
+That is a switch, not a fade, and it is why the instrument did not so much fade
+in as arrive.
+
+Four curves have now been wrong here in four different ways, which is worth
+listing because each looked right at the time:
+
+| | shape | what it got wrong |
+|---|---|---|
+| v2.0 | squared | still getting louder at the very top |
+| v2.1 | cubic `1-(1-n)³` | 84% of AMPLITUDE by half travel, but only -12dB at a quarter |
+| v3.1 | fifth power | fast, but steepest at the bottom — no soft start |
+| v3.3 | **smoothstep + lift** | flat at BOTH ends, steep through the middle |
+
+What the first three missed is that **both ends matter**. Leaving silence gently
+needs the curve flat near zero; not feeling sluggish needs it steep in the
+middle. That is a smoothstep, `n²(3-2n)`. The `lift` term `s(1-s)` is then zero
+at both extremes and largest in the middle, so it recovers the speed a plain
+smoothstep gives away without touching the flat ends.
+
+The deadband dropped 120 → 60 with it. It had been doing double duty as a mute
+AND as a buffer against the sound slamming on; with an S-curve the second job is
+gone, so the first audible sound now arrives at about 3% of travel rather than
+4.5%.
+
+### The multiply order is load-bearing
+
+The obvious `n2 = (n*n)>>12; sm = (n2*(3-2n))>>12` throws away four bits before
+the second multiply, and the rounding that costs made the curve
+**NON-MONOTONIC**: 108 places where turning the knob UP made the level go DOWN.
+Individually inaudible, but a volume control that sometimes goes backwards is
+not a volume control.
+
+Shifting once at the end is exact but overflows int32 — `n*n*(3-2n)` peaks at
+2.06e11. Reordering so the small factor is reduced first keeps the peak
+intermediate at 16.7M and is exactly monotonic across all 4096 inputs.
+`breathsim.py` asserts zero backward steps.
+
+---
+
 ## v3.2.0 — the "vibrato step" was an octave jump
 
 > "when vibrato boundary on main knob is added it seems to be an octave higher
