@@ -101,13 +101,11 @@ def holes(mask):
 
 
 def build():
-    masks = uint_array("ocarina.h", "kComboMask[kMaxLevels]")
-    order = combo_array("ocarina.h", "kLearnOrder[kMaxLevels]")
-    usable = uint_array("pitch.h", "kUsableDegrees[12]")
-    max_root = uint_array("pitch.h", "kMaxRootFor[12]")
+    masks = uint_array("ocarina.h", "kComboMask[15]")
+    order = combo_array("ocarina.h", "kLearnOrder[kNumLevels]")
+    max_root = uint_array("pitch.h", "kMaxRootForOctave[4]")
     base = constant("ocarina.h", "kBaseNote")
-    lo = constant("pitch.h", "kPitchLoNote")
-    hi = constant("pitch.h", "kPitchHiNote")
+    octaves = uint_array("ocarina.h", "kOctaveBase[kNumOctaves]")
     sc = scales()
 
     # A parser that quietly returns nothing writes an EMPTY table into the
@@ -116,30 +114,33 @@ def build():
     # numeric scrape found zero entries and silently deleted the calibration
     # chart. Fail loudly instead.
     assert len(masks) == 15, f"kComboMask: got {len(masks)} entries"
-    assert len(order) == 15, f"kLearnOrder: got {len(order)} entries"
-    assert sorted(order) == list(range(15)), "kLearnOrder is not a permutation"
-    assert len(usable) == 12, f"kUsableDegrees: got {len(usable)}"
-    assert len(max_root) == 12, f"kMaxRootFor: got {len(max_root)}"
+    assert len(order) == 10, f"kLearnOrder: got {len(order)} entries"
+    assert sorted(order) == list(range(10)), "kLearnOrder is not a permutation"
+    assert len(max_root) == 4, f"kMaxRootForOctave: got {len(max_root)}"
+    assert len(octaves) == 4, f"kOctaveBase: got {len(octaves)}"
     assert len(sc) == 12, f"kScales: got {len(sc)}"
 
     L = []
     L.append("### Fingering")
     L.append("")
-    L.append("Ten combinations in 10-mode, fifteen in 15-mode. The LEDs mirror the")
+    L.append("Ten combinations: four singles and six pairs. The LEDs mirror the")
     L.append("Four Voltages buttons, so the panel shows the fingering directly.")
     L.append("")
-    L.append("| Degree | Buttons | Holes | Mode |")
-    L.append("|-------:|---------|-------|------|")
-    for i, m in enumerate(masks):
-        mode = "both" if i < 10 else "15 only"
-        L.append(f"| {i} | {NAMES[i]} | `{holes(m)}` | {mode} |")
+    L.append("| Degree | Buttons | Holes |")
+    L.append("|-------:|---------|-------|")
+    for i in range(10):
+        L.append(f"| {i} | {NAMES[i]} | `{holes(masks[i])}` |")
+    L.append("")
+    L.append("Pressing three or four buttons does **nothing** \u2014 those voltages")
+    L.append("land far from every learned level, so the card ignores them and holds")
+    L.append("the note you were already playing rather than jumping somewhere wrong.")
     L.append("")
 
     L.append("### Calibration order")
     L.append("")
-    L.append("Hold each combination and tap the switch. The first ten are")
-    L.append("NIBBLE's own order, so a fall back to 10-mode keeps the captures")
-    L.append("already taken.")
+    L.append("Hold each combination and tap the switch. This is NIBBLE's own")
+    L.append("order, which is the one part of the calibration with real hardware")
+    L.append("history behind it.")
     L.append("")
     L.append("| Step | Hold | Holes |")
     L.append("|-----:|------|-------|")
@@ -149,19 +150,32 @@ def build():
 
     L.append("### Scales")
     L.append("")
-    L.append(f"The voice plays MIDI {lo}..{hi} "
-             f"({note_name(lo)} to {note_name(hi)}), so every scale reaches all")
-    L.append("fifteen degrees and transposes a full octave. Everything below is")
-    L.append("derived from `scales.h` and `pitch.h` — see `tools/caltable.py`.")
+    L.append("Ten combinations are ten DEGREES of the chosen scale, so the scale")
+    L.append("also sets the range. Everything below is derived from `scales.h`")
+    L.append("and `pitch.h` \u2014 see `tools/caltable.py`.")
     L.append("")
-    L.append("| Y | Scale | Notes/oct | Degrees | Transpose | Range (deg 0..top) |")
-    L.append("|--:|-------|----------:|--------:|----------:|--------------------|")
-    for i, s in enumerate(sc):
-        top = quantize(base, s, usable[i] - 1)
-        bot = quantize(base, s, 0)
-        L.append(f"| {i} | {SCALE_NAMES[i]} | {s[0]} | {usable[i]}/15 | "
-                 f"+{max_root[i]} | {note_name(bot)}–{note_name(top)} |")
+    L.append("| Y | Scale | Notes/oct | Range from C4 |")
+    L.append("|--:|-------|----------:|---------------|")
+    for i, sc_i in enumerate(sc):
+        top = quantize(base, sc_i, 9)
+        bot = quantize(base, sc_i, 0)
+        L.append(f"| {i} | {SCALE_NAMES[i]} | {sc_i[0]} | "
+                 f"{note_name(bot)}\u2013{note_name(top)} |")
     L.append("")
+
+    L.append("### Octaves")
+    L.append("")
+    L.append("Chosen with the X knob during calibration.")
+    L.append("")
+    L.append("| X | Base | Transpose | Widest scale reaches |")
+    L.append("|--:|------|----------:|----------------------|")
+    for i, ob in enumerate(octaves):
+        top = max(quantize(ob + max_root[i], s2, 9) for s2 in sc)
+        star = "  *(default)*" if ob == base else ""
+        L.append(f"| {i} | {note_name(ob)}{star} | +{max_root[i]} | "
+                 f"{note_name(top)} |")
+    L.append("")
+
     return "\n".join(L)
 
 

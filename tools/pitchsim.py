@@ -17,10 +17,12 @@ import sys
 import os
 
 SR = 48000.0
-LO_NOTE, HI_NOTE = 36, 91
+LO_NOTE, HI_NOTE = 36, 108
 MV_PER_SEMI_Q8 = 21333
 MAX_ROOT = 12
-MAX_DEGREE = 15          # 15-mode uses degrees 0..14
+BASE_NOTE = 60          # ocarina.h kBaseNote -- the DEFAULT octave
+OCTAVES = [36, 48, 60, 72]
+MAX_DEGREE = 10          # ten combos: four singles + six pairs
 # v1 held delay lengths here, for a waveguide. The voice is an oscillator
 # now, so the table holds phase INCREMENTS and the octave shift goes the other
 # way -- increments double where delays halved.
@@ -96,14 +98,16 @@ def semi_to_inc_q32(semi):
     return TABLE[st] << oct_
 
 
-CENT_Q24 = 9691
+CENT_Q28 = 9691
 
 
-def apply_fine_cents(inc, c):
-    # Note the SIGN: sharpening RAISES an increment, where it shortened a delay.
-    x = c * CENT_Q24
-    lin = (inc * x) >> 24
-    quad = (((x * x) >> 24) * inc) >> 25
+def apply_fine_cents(inc, c_q4):
+    # Q4 cents (sixteenths). Whole cents quantised small vibrato depths to zero,
+    # which is what made vibrato arrive as an audible step. Sign: sharpening
+    # RAISES an increment, where it shortened a delay in v1.
+    x = c_q4 * CENT_Q28
+    lin = (inc * x) >> 28
+    quad = (((x * x) >> 28) * inc) >> 29
     return inc + lin + quad
 
 
@@ -111,9 +115,11 @@ def semis_to_mv(semi):
     return (semi * MV_PER_SEMI_Q8 + 128) >> 8
 
 
-def pitch_mv(semi, fine_cents):
+def pitch_mv(semi, fine_cents_q4):
     # Referenced to the root, so the root leaves the card at 0V.
-    return semis_to_mv(semi - LO_NOTE) + ((fine_cents * 853 + 512) >> 10)
+    # Q4 cents, and referenced to BASE_NOTE (fixed) not the live octave --
+    # see PitchMillivolts() in pitch.h for why that is deliberate.
+    return semis_to_mv(semi - BASE_NOTE) + ((fine_cents_q4 * 853 + 8192) >> 14)
 
 
 def quantize_note(root, scale, degree):
@@ -166,7 +172,7 @@ def test_increment_fits():
     wrong pitch instead of simply being too high."""
     print("increment bounds")
     top = semi_to_inc_q32(HI_NOTE)
-    top = apply_fine_cents(top, 100)          # sharpest fine tune too
+    top = apply_fine_cents(top, 100 << 4)          # sharpest fine tune too
     print(f"        highest increment: {top} ({inc_to_hz(top):.1f}Hz)")
     check("top note fits in uint32", top < 2**32, True)
     # And it must stay under Nyquist, or the oscillator aliases.
@@ -181,7 +187,7 @@ def test_fine_cents():
     for n in (36, 60, 91):
         d0 = semi_to_inc_q32(n)
         for c in range(-100, 101, 5):
-            d = apply_fine_cents(d0, c)
+            d = apply_fine_cents(d0, c << 4)
             got = cents(inc_to_hz(d), inc_to_hz(d0))
             worst = max(worst, abs(got - c))
     print(f"        worst deviation from ideal: {worst:.3f} cents")
@@ -202,10 +208,10 @@ def test_cv_and_bore_agree():
     worst, worst_at = 0.0, None
     for n in range(LO_NOTE, HI_NOTE + 1):
         for c in (-100, -37, 0, 37, 100):
-            f_bore = inc_to_hz(apply_fine_cents(semi_to_inc_q32(n), c))
+            f_bore = inc_to_hz(apply_fine_cents(semi_to_inc_q32(n), c << 4))
             # CV is 1V/oct referenced to the scale root at kBaseNote = 36 = 3V.
-            mv = pitch_mv(n, c)
-            f_cv = midi_hz(LO_NOTE) * 2 ** (mv / 1000.0)
+            mv = pitch_mv(n, c << 4)
+            f_cv = midi_hz(BASE_NOTE) * 2 ** (mv / 1000.0)
             e = abs(cents(f_bore, f_cv))
             if e > worst:
                 worst, worst_at = e, (n, c)
@@ -234,59 +240,55 @@ def test_no_cv_clipping():
     kMaxRoot of 36 was derived for TEN degrees and would silently clip the top
     of a fifteen-degree arpeggio.
     """
-    print("CV headroom and bore fit")
+    print("CV headroom and range fit")
     scales = load_scales()
     check("parsed 12 scales", len(scales), 12)
 
-    max_root = load_uint_array("pitch.h", "kMaxRootFor[12]")
-    usable = load_uint_array("pitch.h", "kUsableDegrees[12]")
-    check("kMaxRootFor has 12 entries", len(max_root), 12)
-    check("kUsableDegrees has 12 entries", len(usable), 12)
+    max_root = load_uint_array("pitch.h", "kMaxRootForOctave[4]")
+    check("kMaxRootForOctave has 4 entries", len(max_root), 4)
 
-    # 1. Nothing may exceed the 6V rail.
+    # 1. Nothing may exceed the 6V rail, at any octave.
     worst, worst_at = -99999, None
-    for si, sc in enumerate(scales):
-        for root in range(0, max_root[si] + 1):
-            for deg in range(usable[si]):
-                n = quantize_note(LO_NOTE + root, sc, deg)
-                mv = pitch_mv(n, 100)          # sharpest fine tune too
-                if mv > worst:
-                    worst, worst_at = mv, (si, root, deg, n)
-    print(f"        highest CV: {worst}mV (scale {worst_at[0]}, root +{worst_at[1]}, "
-          f"degree {worst_at[2]}, MIDI {worst_at[3]})")
+    for oi, base in enumerate(OCTAVES):
+        for si, sc in enumerate(scales):
+            for root in range(0, max_root[oi] + 1):
+                for deg in range(MAX_DEGREE):
+                    n = quantize_note(base + root, sc, deg)
+                    mv = pitch_mv(n, 100 << 4)     # sharpest fine tune too
+                    if mv > worst:
+                        worst, worst_at = mv, (base, si, root, deg, n)
+    print(f"        highest CV: {worst}mV (base {worst_at[0]}, scale {worst_at[1]}, "
+          f"root +{worst_at[2]}, degree {worst_at[3]}, MIDI {worst_at[4]})")
     check("top of every scale stays under 6000mV", worst <= 6000, True)
 
-    # 2. THE SILENT ONE. Past the bore's top note the delay clamps while the CV
-    #    keeps climbing, so the card plays one pitch and tells the rack another.
-    #    Nothing in the system would flag it, so it is asserted here.
-    over = []
-    under = []
-    for si, sc in enumerate(scales):
-        for root in range(0, max_root[si] + 1):
-            for deg in range(usable[si]):
-                n = quantize_note(LO_NOTE + root, sc, deg)
-                if n > HI_NOTE:
-                    over.append((si, root, deg, n))
-                if n < LO_NOTE:
-                    under.append((si, root, deg, n))
-    check("no reachable note is above the bore's top", over, [])
-    check("no reachable note is below the bore's floor", under, [])
+    # 2. THE SILENT ONE. Past the top note the pitch clamps while the CV keeps
+    #    climbing, so the card plays one pitch and tells the rack another.
+    over, under = [], []
+    for oi, base in enumerate(OCTAVES):
+        for si, sc in enumerate(scales):
+            for root in range(0, max_root[oi] + 1):
+                for deg in range(MAX_DEGREE):
+                    n = quantize_note(base + root, sc, deg)
+                    if n > HI_NOTE:
+                        over.append((base, si, root, deg, n))
+                    if n < LO_NOTE:
+                        under.append((base, si, root, deg, n))
+    check("no reachable note is above the ceiling", over, [])
+    check("no reachable note is below the floor", under, [])
 
-    # 3. kMaxRootFor must be as generous as it can be: a scale with headroom
-    #    should not be denied transposition it could have had.
+    # 3. kMaxRootForOctave must be as generous as it can be.
     tight = []
-    for si, sc in enumerate(scales):
-        r = max_root[si] + 1
+    for oi, base in enumerate(OCTAVES):
+        r = max_root[oi] + 1
         if r > 12:
             continue
-        fits = all(quantize_note(LO_NOTE + r, sc, d) <= HI_NOTE
-                   for d in range(usable[si]))
+        fits = all(quantize_note(base + r, sc, d) <= HI_NOTE
+                   for sc in scales for d in range(MAX_DEGREE))
         if fits:
-            tight.append((si, max_root[si]))
-    check("no scale is transposed less than it could be", tight, [])
+            tight.append((base, max_root[oi]))
+    check("no octave is transposed less than it could be", tight, [])
 
-    print(f"        usable degrees per scale: {usable}")
-    print(f"        max transpose per scale:  {max_root}")
+    print(f"        max transpose per octave: {max_root}")
 
 
 def main():

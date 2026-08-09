@@ -49,7 +49,7 @@ knob** — hold the switch down for two seconds.
 | **Audio In 2** | offsets the X knob *(used as CV)* |
 | **Pulse In 1** | tongue: re-articulates without changing the note |
 | **Main** | level, then vibrato depth *(fine tune while calibrating)* |
-| **X** | vibrato character, plus a level tilt and the Audio 2 wavefold |
+| **X** | vibrato character, level tilt, wavefold *(octave while calibrating)* |
 | **Y** | scale *(coarse tune while calibrating)* |
 | **Switch ↑** | legato: glide between notes, plus vibrato — and nothing else |
 | **Switch —** | tongued: a chiff on every note |
@@ -122,60 +122,46 @@ cut a phrase or play hard staccato.
 
 ---
 
-## Fifteen combinations, or ten
+## Ten combinations
 
-Four buttons make fifteen usable combinations (not sixteen — see above). Whether
-a real Four Voltages can space fifteen voltages far enough apart to tell them
-reliably is **unknown**, and depends on the module, the output you patch, and
-where its knob is.
+Four buttons can express fifteen non-empty combinations (not sixteen — see
+above), and the card used to walk all fifteen and work out at the end whether
+the resistor network had separated them well enough to use them all.
 
-So the card measures. Calibration walks all fifteen, computes the tightest gap
-between any two, and decides:
+**Ten is now the only mode**: four singles and six pairs. Fifteen turned out to
+be simply too many to play — the triples are awkward fingerings whatever the
+voltages happen to do, and it made every calibration five taps longer.
 
-- **15-mode** — all fifteen play. LEDs ramp down and both bottom LEDs blink
-  three times. LED 5 glows dimly while you play.
-- **10-mode** — four singles and six pairs, which is NIBBLE's proven set.
-  Triples and all-four are ignored rather than played wrongly. LED 5 stays dark.
+**Pressing three or four buttons is safe.** Those voltages land far from every
+learned level, so the card ignores them and holds the note you were already
+playing rather than jumping somewhere wrong. That rejection is what makes
+dropping them safe rather than merely convenient.
 
-**Expect 10-mode.** Fifteen levels need nearly six volts of near-perfectly even
-spacing, and resistor networks are rarely that even. 10-mode is a complete
-instrument; 15-mode is a bonus the hardware grants or withholds.
+If two learned levels come out too close to tell apart, both bottom LEDs flash
+during the walk and **LED 5 stays dimly lit while you play**. Four Voltages has
+four outputs and they behave differently, so trying another one costs a minute:
+hold the switch down for two seconds to recalibrate from anywhere.
 
-### Chasing 15-mode
-
-When it falls back, the top four LEDs show **how close it got**, in quarters:
-
-| LEDs | Meaning |
-|---|---|
-| `●○○○` | badly collided — two combinations nearly identical. Try another output. |
-| `●●○○` | far off |
-| `●●●○` | close-ish — worth nudging the Four Voltages knob |
-| `●●●●` | **very close** — a small nudge may do it |
-
-Four Voltages has four outputs and they behave differently. Try each; nudge the
-knob; recalibrate. Switch-down-2s re-enters calibration from anywhere, so it is
-a fast loop. Switch-up-1s shows the bar again any time.
-
-If both bottom LEDs flash **during** the walk, two captures have collided
-already — that patch will not make 15, so you can abort and try another rather
-than finishing all fifteen.
-
-If the LEDs alternate fast in columns, calibration **failed**: almost always
+If the LEDs alternate fast in columns, calibration **failed** — almost always
 nothing patched into CV In 1. The previous calibration is kept.
 
 ---
 
-## Tuning
+## Tuning and octave
 
-**Tuning happens during calibration.** A quiet reference note drones for the
-whole of it, and you tune that note while you teach the fingering:
+**Both happen during calibration.** A quiet reference note drones for the whole
+of it, and all three knobs shape that note while you teach the fingering:
 
-- **Y** — coarse, ±12 semitones
-- **Main** — fine, ±100 cents
+- **Y** — coarse tune, ±12 semitones
+- **Main** — fine tune, ±100 cents
+- **X** — **octave**: C2, C3, C4 or C5
 
-The two jobs use different controls — calibration reads CV In 1 and the switch,
-tuning reads Y and Main — so neither costs the other anything and there is no
-separate mode to enter or leave.
+Calibration itself reads only CV In 1 and the switch, so the knobs are free —
+neither job costs the other anything and there is no separate mode to enter.
+
+The default is **C4**, a concert flute's lowest note. C2 is two octaves below
+that and is genuinely sub-bass; it is still there if you want it, but it is no
+longer where the card starts.
 
 Both knobs pick up from wherever they already are, so starting a calibration
 never jumps the tuning; a knob takes control only once you actually move it.
@@ -188,32 +174,31 @@ A power cycle means calibrating again anyway, and that is when you retune.
 <!-- BEGIN GENERATED -->
 ### Fingering
 
-Ten combinations in 10-mode, fifteen in 15-mode. The LEDs mirror the
+Ten combinations: four singles and six pairs. The LEDs mirror the
 Four Voltages buttons, so the panel shows the fingering directly.
 
-| Degree | Buttons | Holes | Mode |
-|-------:|---------|-------|------|
-| 0 | A | `●○ / ○○` | both |
-| 1 | B | `○● / ○○` | both |
-| 2 | C | `○○ / ●○` | both |
-| 3 | D | `○○ / ○●` | both |
-| 4 | AB | `●● / ○○` | both |
-| 5 | AC | `●○ / ●○` | both |
-| 6 | AD | `●○ / ○●` | both |
-| 7 | BC | `○● / ●○` | both |
-| 8 | BD | `○● / ○●` | both |
-| 9 | CD | `○○ / ●●` | both |
-| 10 | ABC | `●● / ●○` | 15 only |
-| 11 | ABD | `●● / ○●` | 15 only |
-| 12 | ACD | `●○ / ●●` | 15 only |
-| 13 | BCD | `○● / ●●` | 15 only |
-| 14 | ABCD | `●● / ●●` | 15 only |
+| Degree | Buttons | Holes |
+|-------:|---------|-------|
+| 0 | A | `●○ / ○○` |
+| 1 | B | `○● / ○○` |
+| 2 | C | `○○ / ●○` |
+| 3 | D | `○○ / ○●` |
+| 4 | AB | `●● / ○○` |
+| 5 | AC | `●○ / ●○` |
+| 6 | AD | `●○ / ○●` |
+| 7 | BC | `○● / ●○` |
+| 8 | BD | `○● / ○●` |
+| 9 | CD | `○○ / ●●` |
+
+Pressing three or four buttons does **nothing** — those voltages
+land far from every learned level, so the card ignores them and holds
+the note you were already playing rather than jumping somewhere wrong.
 
 ### Calibration order
 
-Hold each combination and tap the switch. The first ten are
-NIBBLE's own order, so a fall back to 10-mode keeps the captures
-already taken.
+Hold each combination and tap the switch. This is NIBBLE's own
+order, which is the one part of the calibration with real hardware
+history behind it.
 
 | Step | Hold | Holes |
 |-----:|------|-------|
@@ -227,32 +212,38 @@ already taken.
 | 8 | BD | `○● / ○●` |
 | 9 | AD | `●○ / ○●` |
 | 10 | BC | `○● / ●○` |
-| 11 | ABC | `●● / ●○` |
-| 12 | ABD | `●● / ○●` |
-| 13 | ACD | `●○ / ●●` |
-| 14 | BCD | `○● / ●●` |
-| 15 | ABCD | `●● / ●●` |
 
 ### Scales
 
-The voice plays MIDI 36..91 (C2 to G6), so every scale reaches all
-fifteen degrees and transposes a full octave. Everything below is
-derived from `scales.h` and `pitch.h` — see `tools/caltable.py`.
+Ten combinations are ten DEGREES of the chosen scale, so the scale
+also sets the range. Everything below is derived from `scales.h`
+and `pitch.h` — see `tools/caltable.py`.
 
-| Y | Scale | Notes/oct | Degrees | Transpose | Range (deg 0..top) |
-|--:|-------|----------:|--------:|----------:|--------------------|
-| 0 | Phrygian | 7 | 15/15 | +12 | C2–C4 |
-| 1 | Hirajoshi | 5 | 15/15 | +12 | C2–G#4 |
-| 2 | Harmonic Minor | 7 | 15/15 | +12 | C2–C4 |
-| 3 | Natural Minor | 7 | 15/15 | +12 | C2–C4 |
-| 4 | Minor Pentatonic | 5 | 15/15 | +12 | C2–A#4 |
-| 5 | m7 Arpeggio | 4 | 15/15 | +12 | C2–G5 |
-| 6 | Dorian | 7 | 15/15 | +12 | C2–C4 |
-| 7 | Major Pentatonic | 5 | 15/15 | +12 | C2–A4 |
-| 8 | Ionian (Major) | 7 | 15/15 | +12 | C2–C4 |
-| 9 | Maj7 Arpeggio | 4 | 15/15 | +12 | C2–G5 |
-| 10 | Whole Tone | 6 | 15/15 | +12 | C2–E4 |
-| 11 | Chromatic | 12 | 15/15 | +12 | C2–D3 |
+| Y | Scale | Notes/oct | Range from C4 |
+|--:|-------|----------:|---------------|
+| 0 | Phrygian | 7 | C4–D#5 |
+| 1 | Hirajoshi | 5 | C4–G#5 |
+| 2 | Harmonic Minor | 7 | C4–D#5 |
+| 3 | Natural Minor | 7 | C4–D#5 |
+| 4 | Minor Pentatonic | 5 | C4–A#5 |
+| 5 | m7 Arpeggio | 4 | C4–D#6 |
+| 6 | Dorian | 7 | C4–D#5 |
+| 7 | Major Pentatonic | 5 | C4–A5 |
+| 8 | Ionian (Major) | 7 | C4–E5 |
+| 9 | Maj7 Arpeggio | 4 | C4–E6 |
+| 10 | Whole Tone | 6 | C4–F#5 |
+| 11 | Chromatic | 12 | C4–A4 |
+
+### Octaves
+
+Chosen with the X knob during calibration.
+
+| X | Base | Transpose | Widest scale reaches |
+|--:|------|----------:|----------------------|
+| 0 | C2 | +12 | E5 |
+| 1 | C3 | +12 | E6 |
+| 2 | C4  *(default)* | +12 | E7 |
+| 3 | C5 | +8 | C8 |
 
 <!-- END GENERATED -->
 
@@ -267,15 +258,13 @@ Chromatic packs them into just over one.
 
 | | LEDs 0–3 | LED 4 | LED 5 |
 |---|---|---|---|
-| **Playing** | the fingering | breath | dim in 15-mode, dark in 10 |
-| **Calibrating** | the combination to hold | ● singles, ●● triples | ● pairs, ●● triples |
+| **Playing** | the fingering | level | dim if two levels collided |
+| **Calibrating** | the combination to hold | ● during singles | ● during pairs |
 | **Captured** | all six, briefly | | |
 | **Collision** | dark | flashing | flashing |
-| **Done, 15-mode** | fade out | 3 blinks | 3 blinks |
-| **Done, 10-mode** | how close it got | one long blink | dark |
+| **Done** | fade out | | |
 | **Failed** | columns alternating fast | | |
 | **Aborted** | all six, twice | | |
-| **Tuning** | one LED circling | coarse offset | fine offset |
 
 ---
 

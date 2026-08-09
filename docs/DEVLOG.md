@@ -5,6 +5,89 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v3.1.0 — the knob, the step, and ten is enough
+
+Four reports from the third hardware session.
+
+### "The ramp from silence to sound still seems very slow"
+
+Two causes compounding, and the second is the interesting one.
+
+The deadband was 7% of travel, which is a long way to turn before anything at
+all happens. That part was easy.
+
+The real cause was that **the level curve was being judged in the wrong units.**
+v2.1 used a cubic, `1-(1-n)^3`, which reaches 84% of full AMPLITUDE by half the
+travel — that looks fast, and it is what the previous devlog entry proudly
+reported. But loudness is logarithmic: in dB the same curve was still at -17dB
+at a tenth of the travel and only reached -12dB, roughly half as loud, at a
+QUARTER. That is the slow ramp.
+
+A fifth power gets to half perceived volume by about an eighth of the travel and
+is essentially full by a third. Two extra multiplies.
+
+**The lesson is the measurement, not the constant:** an amplitude curve says
+almost nothing about how a knob feels. Judge it in dB.
+
+### "The adding vibrato stage has an audible step"
+
+Followed by the clue that solved it: *"It's NOT there in portamento mode."*
+
+Vibrato depth was carried in WHOLE CENTS. At depths under one cent the
+arithmetic `(fast_sin(phase) * depth) >> 15` rounds to zero for every phase, so
+vibrato produced literally nothing until its depth crossed two cents — and then
+appeared all at once.
+
+Portamento hid it because a glide keeps `glideCents` continuously non-zero, so
+`ApplyFineCents()` runs every tick either way. In tongued mode with the tuning
+centred, the total cents term was exactly zero, and the `if (cents)` guard
+skipped the pitch bend entirely. The pitch snapped between "unmodified" and
+"modified".
+
+Cents are now Q4 (sixteenths) through the whole pitch path. The constant did not
+even change — dividing by 16 and shifting four more bits cancel exactly — only
+the shift and the callers.
+
+### "Make the vib start much earlier in the Main knob"
+
+`kVibOnset` 2000 → 1200, so vibrato begins about a quarter of the way up and has
+three quarters of the travel to grow in. It still sits above where the level
+curve has arrived, so the two stages stay legible: the bottom of the knob is
+loudness, the rest is expression.
+
+### "Let's just use 10 key combos. 15 is too many"
+
+The adaptive 15/10 machinery is gone: no mode decision, no second tolerance set,
+no four-bar gap meter, no mode-announcement LED vocabulary. Calibration is ten
+taps instead of fifteen.
+
+The triples and the all-four combo remain SAFE rather than merely unused — they
+land far from every learned level, so the match window rejects them and pressing
+one leaves the current note alone. `levelsim.py` asserts exactly that, because
+it is the property that makes dropping them safe.
+
+### The octave, and a ceiling that had to move
+
+X now picks the octave during calibration — C2, C3, C4 or C5, defaulting to C4,
+a concert flute's lowest note. The card had been sitting at C2, which is
+sub-bass and nothing like a flute.
+
+That immediately exposed a latent clamp. `kPitchHiNote` was 91, and the top of a
+scale from C5 reaches MIDI 100 — the pitch would have clamped while CV Out 1
+kept climbing, which is the silent disagreement `pitchsim.py` exists to catch.
+It caught it.
+
+The ceiling is now 108, and that limit comes from the WAVEFOLDER rather than the
+oscillator: a pure sine would not alias until its fundamental passed Nyquist
+around MIDI 135, but folding generates harmonics, and at MIDI 108 the fifth
+harmonic is 20.9kHz — just inside. At MIDI 112 it is 26.4kHz and folds back as
+an inharmonic whistle.
+
+Transposition is capped per-octave rather than per-scale now (`{12, 12, 12, 8}`),
+because the top octave is the one that runs out of room.
+
+---
+
 ## v3.0.0 — the air went, vibrato arrived
 
 > "No - not enjoying it. The air is adding nothing."

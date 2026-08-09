@@ -115,14 +115,14 @@ Vibrato VibratoFor(int32_t mainQ12, int32_t xKnob)
 	if (x < 2048)
 	{
 		const int32_t t = x << 1;                        // 0..4094 across the half
-		rate  = kVibRateFastQ8;                          // fast throughout
-		depth = Lerp(kVibDepthWide, kVibDepthTight, t);
+		rate  = kVibRateFastQ8;                              // fast throughout
+		depth = Lerp(kVibDepthWideQ4, kVibDepthTightQ4, t);
 	}
 	else
 	{
 		const int32_t t = (x - 2048) << 1;
 		rate  = Lerp(kVibRateFastQ8, kVibRateSlowQ8, t);
-		depth = Lerp(kVibDepthTight, kVibDepthWide, t);
+		depth = Lerp(kVibDepthTightQ4, kVibDepthWideQ4, t);
 	}
 
 	// MAIN scales the depth, from nothing to the full amount X asked for.

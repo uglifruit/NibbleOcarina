@@ -29,9 +29,11 @@ namespace nib {
 
 /// Below this knob position the instrument is silent.
 ///
-/// ~7% of travel. Wide enough that the knob has a definite "off" the player
-/// can find without looking, narrow enough not to waste useful travel.
-constexpr int32_t kBreathThresh = 300;
+/// ~3% of travel. Was 300 (~7%), which combined with the level curve to make
+/// the instrument take an uncomfortably long turn to arrive — reported from
+/// hardware as "the ramp from silence to sound still seems very slow". Still
+/// wide enough to find "off" by feel without looking.
+constexpr int32_t kBreathThresh = 120;
 
 /// Where the octave jump happens, as an EFFORT value (0..4095).
 ///
@@ -149,8 +151,12 @@ public:
 	/// Which register: 0 = as fingered, 1 = an octave up.
 	int Register() const { return register_; }
 
-	/// Current vibrato offset in cents, signed. Zero when depth is zero.
-	int32_t VibratoCents() const { return vibCents_; }
+	/// Current vibrato offset in Q4 CENTS (sixteenths), signed.
+	///
+	/// Q4 and not whole cents: at small depths whole-cent arithmetic quantises
+	/// the entire modulation to zero, so vibrato did nothing until its depth
+	/// reached two cents and then arrived abruptly. That was the audible step.
+	int32_t VibratoCentsQ4() const { return vibCents_; }
 
 private:
 	int32_t curved_     = 0;   ///< LEVEL after the curve, before chiff/stop

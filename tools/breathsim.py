@@ -19,7 +19,7 @@ import sys
 
 CTRL_RATE = 3000
 
-BREATH_THRESH = 300
+BREATH_THRESH = 120
 REGISTER_UP   = 2870
 REGISTER_DOWN = 2460
 
@@ -81,8 +81,12 @@ class Breath:
             # past full scale in Q12. See breath.cpp.
             n = min(4095, ((v - BREATH_THRESH) << 12) // (4095 - BREATH_THRESH))
             self.effort = n
+            # Fifth power: loudness is logarithmic, so the curve has to be very
+            # fast in amplitude to feel merely quick to the ear. See breath.cpp.
             inv = 4096 - n
-            self.curved = min(4095, 4096 - (((inv * inv) >> 12) * inv >> 12))
+            i2 = (inv * inv) >> 12
+            i4 = (i2 * i2) >> 12
+            self.curved = min(4095, 4096 - ((i4 * inv) >> 12))
 
         # Against EFFORT: level has flattened long before the top of the knob.
         if self.register == 0:

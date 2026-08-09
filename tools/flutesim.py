@@ -39,9 +39,9 @@ DC_POLE_Q15 = 32735
 
 VIB_RATE_FAST_Q8 = 8 * 256
 VIB_RATE_SLOW_Q8 = 3 * 256
-VIB_DEPTH_WIDE = 50
-VIB_DEPTH_TIGHT = 10
-VIB_ONSET = 2000
+VIB_DEPTH_WIDE_Q4 = 50 * 16
+VIB_DEPTH_TIGHT_Q4 = 10 * 16
+VIB_ONSET = 1200
 X_VOLUME_TILT = 700
 
 FAILURES = []
@@ -99,16 +99,16 @@ def lerp(a, b, t):
 
 
 def vibrato_for(main_q12, x):
-    """flute.cpp VibratoFor(). Returns (rate_q8, cents)."""
+    """flute.cpp VibratoFor(). Returns (rate_q8, cents_q4)."""
     x = max(0, min(4095, x))
     if x < 2048:
         t = x << 1
         rate = VIB_RATE_FAST_Q8
-        depth = lerp(VIB_DEPTH_WIDE, VIB_DEPTH_TIGHT, t)
+        depth = lerp(VIB_DEPTH_WIDE_Q4, VIB_DEPTH_TIGHT_Q4, t)
     else:
         t = (x - 2048) << 1
         rate = lerp(VIB_RATE_FAST_Q8, VIB_RATE_SLOW_Q8, t)
-        depth = lerp(VIB_DEPTH_TIGHT, VIB_DEPTH_WIDE, t)
+        depth = lerp(VIB_DEPTH_TIGHT_Q4, VIB_DEPTH_WIDE_Q4, t)
 
     m = main_q12
     if m < VIB_ONSET:
@@ -252,11 +252,16 @@ def test_vibrato_grows_with_main():
     print("vibrato vs Main")
     for m in (0, 1000, 2000, 2500, 3200, 4095):
         rate, cents = vibrato_for(m, 0)
-        print(f"        main {m:4d} -> {cents:3d} cents at {rate/256:.1f}Hz")
-    check("no vibrato below the onset", vibrato_for(1999, 0)[1], 0)
-    check("still none exactly at the onset", vibrato_for(2000, 0)[1], 0)
-    check_true("full depth at the top", vibrato_for(4095, 0)[1] >= VIB_DEPTH_WIDE - 1,
-               f"{vibrato_for(4095,0)[1]} cents")
+        print(f"        main {m:4d} -> {cents/16:5.2f} cents at {rate/256:.1f}Hz")
+    # Derived from VIB_ONSET rather than hard-coded, so moving the onset does
+    # not silently leave these testing the wrong place.
+    check("no vibrato below the onset", vibrato_for(VIB_ONSET - 1, 0)[1], 0)
+    check("still none exactly at the onset", vibrato_for(VIB_ONSET, 0)[1], 0)
+    check_true("and it is genuinely on by a quarter of the way past",
+               vibrato_for(VIB_ONSET + (4095 - VIB_ONSET) // 4, 0)[1] > 16,
+               f"{vibrato_for(VIB_ONSET + (4095-VIB_ONSET)//4, 0)[1]/16:.1f} cents")
+    check_true("full depth at the top", vibrato_for(4095, 0)[1] >= VIB_DEPTH_WIDE_Q4 - 16,
+               f"{vibrato_for(4095,0)[1]/16:.1f} cents")
     prev = -1
     bad = []
     for m in range(4096):
@@ -274,14 +279,14 @@ def test_x_morphs_character():
     for x in (0, 1024, 2048, 3072, 4095):
         rate, cents = vibrato_for(4095, x)
         pts.append((x, rate / 256.0, cents))
-        print(f"        X {x:4d} -> {cents:3d} cents at {rate/256:.1f}Hz")
+        print(f"        X {x:4d} -> {cents/16:5.2f} cents at {rate/256:.1f}Hz")
 
-    check_true("CCW is fast and wide", pts[0][1] > 7.5 and pts[0][2] >= 45,
-               f"{pts[0][1]:.1f}Hz {pts[0][2]}c")
-    check_true("middle is fast and tight", pts[2][1] > 7.5 and pts[2][2] <= 12,
-               f"{pts[2][1]:.1f}Hz {pts[2][2]}c")
-    check_true("CW is slow and wide", pts[-1][1] < 3.5 and pts[-1][2] >= 45,
-               f"{pts[-1][1]:.1f}Hz {pts[-1][2]}c")
+    check_true("CCW is fast and wide", pts[0][1] > 7.5 and pts[0][2] >= 45 * 16,
+               f"{pts[0][1]:.1f}Hz {pts[0][2]/16:.1f}c")
+    check_true("middle is fast and tight", pts[2][1] > 7.5 and pts[2][2] <= 12 * 16,
+               f"{pts[2][1]:.1f}Hz {pts[2][2]/16:.1f}c")
+    check_true("CW is slow and wide", pts[-1][1] < 3.5 and pts[-1][2] >= 45 * 16,
+               f"{pts[-1][1]:.1f}Hz {pts[-1][2]/16:.1f}c")
 
 
 def test_x_tilts_volume():
@@ -364,7 +369,7 @@ def grid():
             lvl = min(4095, m + x_volume_boost(x))
             r = rms(run(220.0, lvl, x)[0])
             rate, cents = vibrato_for(m, x)
-            row += f"{r:8.0f} /{cents:3d}c@{rate/256:.1f}Hz "
+            row += f"{r:8.0f} /{cents/16:5.1f}c@{rate/256:.1f}Hz "
         print(row)
 
 

@@ -3,7 +3,7 @@ Name: NIBBLE OCARINA
 short-description: Turns the Workshop System's four buttons into the finger holes of a flute you blow with a knob
 Language: C++ (ComputerCard)
 Creator: Andy Jenkinson (uglifruit)
-Version: "3.0.0"
+Version: "3.1.0"
 Status: Released
 License: CC-BY-4.0
 repository: https://github.com/uglifruit/NibbleOcarina
@@ -17,7 +17,7 @@ contact:
 
 uf2:
   - path: UF2/ocarina.uf2
-    name: NIBBLE OCARINA 3.0.0
+    name: NIBBLE OCARINA 3.1.0
 
 tags:
   - flute
@@ -67,28 +67,20 @@ summary: |
   alternation up to about sixteen a second. Switch UP is the trill mode - it
   glides between the two pitches instead of articulating each one.<br><br>
 
-  FIFTEEN COMBINATIONS OR TEN - four buttons make fifteen usable combinations,
-  and whether a real Four Voltages can space fifteen voltages far enough apart
-  to tell them reliably is genuinely unknown. So the card measures rather than
-  assuming - calibration walks all fifteen, computes the tightest gap between
-  any two, and either runs all fifteen or falls back to the four singles and six
-  pairs that are known to work, ignoring the rest rather than playing them
-  wrongly. Expect the ten - fifteen levels need nearly six volts of near-perfect
-  even spacing, and resistor networks are rarely that even.<br><br>
+  TEN COMBINATIONS - four singles and six pairs. Four buttons can express
+  fifteen, and the card used to walk all fifteen and work out at the end whether
+  the resistor network separated them well enough to use. Fifteen turned out to
+  be simply too many to play: the triples are awkward fingerings whatever the
+  voltages do. Pressing three or four buttons is SAFE rather than merely unused
+  - those voltages land far from every learned level, so the card ignores them
+  and holds the note you were already playing.<br><br>
 
-  When it falls back, the LEDs show HOW CLOSE IT GOT, in quarters - one LED
-  means two combinations nearly collided and that output will never work, four
-  means a small nudge of the Four Voltages knob might do it. Four Voltages has
-  four outputs and they behave differently, so trying each takes a minute -
-  holding the switch down for two seconds re-enters calibration from anywhere,
-  and holding it up for one second shows the bar again at any time.<br><br>
-
-  TUNING HAPPENS DURING CALIBRATION - a quiet reference note drones for the
-  whole of it, and Y and Main tune that note while you teach the fingering. The
-  two jobs use different controls, so neither costs the other anything and
-  there is no separate mode to enter or leave. Y is coarse in semitones, Main
-  is fine in cents, and both pick up from wherever the knobs already are so
-  starting a calibration never jumps the pitch. Nothing is saved to flash - not
+  TUNING AND OCTAVE HAPPEN DURING CALIBRATION - a quiet reference note drones
+  for the whole of it, and all three knobs shape that note while you teach the
+  fingering. Y is coarse tune in semitones, Main is fine tune in cents, and X
+  picks the OCTAVE from C2 to C5. Calibration itself only reads CV In 1 and the
+  switch, so the knobs are free and neither job costs the other anything. The
+  default is C4, a concert flute's lowest note. Nothing is saved to flash - not
   the tuning and not the calibration, and a power cycle means calibrating again
   anyway, which is when you retune.<br><br>
 

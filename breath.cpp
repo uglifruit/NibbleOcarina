@@ -50,20 +50,28 @@ void Breath::SetKnob(int32_t knob, int32_t cvAdd)
 		// EFFORT is linear — it is simply how far the knob has been turned.
 		effort_ = n;
 
-		// LEVEL is log-shaped: 1 - (1-n)^3, which rises fast and flattens.
-		// Nearly full by half the travel, because that is how ears hear
-		// loudness and how a wind instrument actually speaks.
+		// LEVEL rises very fast, because LOUDNESS IS LOGARITHMIC and this
+		// curve has to fight that.
 		//
-		// v2.0 SQUARED this instead, which is the opposite curve — it spends
-		// the whole sweep still getting louder and only reaches full at the
-		// very end. On hardware that reads as an unresponsive knob, which is
-		// exactly what was reported.
+		// The history is worth keeping, because two plausible curves were both
+		// wrong. v2.0 SQUARED the value: that is the opposite of what is
+		// wanted, spending the whole sweep still getting louder. v2.1 used a
+		// cubic 1-(1-n)^3, which looks fast on paper — 84% of full amplitude by
+		// half travel — but AMPLITUDE is not loudness: in dB it was still only
+		// -12dB (about half as loud) at a quarter of the travel, which is what
+		// "the ramp seems very slow" was describing.
+		//
+		// A fifth power of the same shape gets to roughly half perceived volume
+		// by an eighth of the travel and full by about a third, leaving the
+		// remaining two thirds for vibrato. Two extra multiplies.
 		const int32_t inv = 4096 - n;
-		curved_ = 4096 - (((inv * inv) >> 12) * inv >> 12);
-		// The cubic reaches exactly 4096 at full travel, one past the 0..4095
-		// this is documented to return. Harmless in today's arithmetic, but the
-		// squared curve it replaced had the identical off-by-one and that one
-		// did clip the DAC. Clamp rather than re-derive the reasoning later.
+		const int32_t i2 = (inv * inv) >> 12;
+		const int32_t i4 = (i2 * i2) >> 12;
+		curved_ = 4096 - ((i4 * inv) >> 12);
+		// The curve reaches exactly 4096 at full travel, one past the 0..4095
+		// this is documented to return. Harmless in today's arithmetic, but an
+		// earlier curve had the identical off-by-one and that one did clip the
+		// DAC. Clamp rather than re-derive the reasoning later.
 		if (curved_ > 4095) curved_ = 4095;
 	}
 

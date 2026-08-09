@@ -17,16 +17,16 @@
 //   Pulse In 1   tongue: re-articulates the current note
 //
 //   Main         level, then VIBRATO DEPTH   (FINE TUNE during calibration)
-//   X            vibrato character + level tilt + fold depth
+//   X            vibrato character + level tilt + fold  (OCTAVE during cal)
 //   Y            scale                       (COARSE TUNE during calibration)
 //
 //   Switch UP    legato: glide — and nothing else, ever
 //   Switch MID   tongued
 //   Switch DOWN  mute                        DOWN held 2s -> calibrate
 //
-// Calibration drones a reference note the whole time it runs, and Y/Main tune
-// it while you teach the fingering — the two use different controls, so they
-// cost each other nothing.
+// Calibration drones a reference note the whole time it runs; Y and Main tune
+// it and X picks its octave while you teach the fingering. Calibration reads
+// only CV In 1 and the switch, so the three knobs are free for this.
 //
 //   Audio Out 1  the tone, a sine
 //   Audio Out 2  the same tone, wavefolded as X rises
@@ -290,7 +290,7 @@ private:
 		// Vibrato comes from BOTH knobs: Main sets how much, X sets what kind.
 		// Set before Tick() so the oscillator advances with this tick's values.
 		const Vibrato vib = VibratoFor(breath_.EffortQ12(), xNow_);
-		breath_.SetVibrato(vib.rateQ8, vib.cents);
+		breath_.SetVibrato(vib.rateQ8, vib.centsQ4);
 
 		breath_.Tick();
 
@@ -361,6 +361,9 @@ private:
 		// gestures; held ones cannot.
 	}
 
+	/// The scale root, as chosen by the X knob during calibration.
+	int32_t BaseNote() const { return kOctaveBase[octave_]; }
+
 	void NoteOn(int8_t combo)
 	{
 		combo_ = combo;
@@ -400,7 +403,7 @@ private:
 	/// combo -> degree -> semitone -> increment, and the CV to match.
 	void __not_in_flash_func(UpdatePitch)()
 	{
-		const int32_t vib = breath_.VibratoCents();
+		const int32_t vibQ4 = breath_.VibratoCentsQ4();
 		const bool gliding = (breath_.Art() == Articulation::Legato)
 		                   && (glideSemiQ8_ != targetSemiQ8_);
 
@@ -410,18 +413,14 @@ private:
 		// when the vibrato happened to move, which is a slur that arrives in
 		// jerks or, with vibrato off, never arrives at all.
 		if (!pitchDirty_ && !gliding
-		    && breath_.Register() == regLast_ && vib == vibLast_)
+		    && breath_.Register() == regLast_ && vibQ4 == vibLast_)
 			return;
 
 		pitchDirty_ = false;
 		regLast_ = breath_.Register();
-		vibLast_ = vib;
+		vibLast_ = vibQ4;
 
-		int degree = (combo_ < 0) ? 0 : combo_;
-		// Degrees the bore cannot reach repeat the top note rather than going
-		// silently out of tune — see kUsableDegrees in pitch.h.
-		const int usable = kUsableDegrees[scale_];
-		if (degree >= usable) degree = usable - 1;
+		const int degree = (combo_ < 0) ? 0 : combo_;
 
 		// Coarse tune shifts the root, in BOTH directions.
 		//
@@ -429,7 +428,7 @@ private:
 		// PitchMillivolts() still applied the offset to CV Out 1 — the two
 		// outputs would disagree by up to a full octave, and only when tuning
 		// flat, which is the hardest kind of discrepancy to notice.
-		int32_t root = kBaseNote + coarse_;
+		int32_t root = BaseNote() + coarse_;
 
 		// CV In 2 transposes, in semitones, in both directions.
 		//
@@ -439,7 +438,7 @@ private:
 		// either way.
 		if (Connected(Input::CV2)) root += (CVIn2() * 24) >> 11;
 
-		const int32_t maxRoot = kBaseNote + kMaxRootFor[scale_];
+		const int32_t maxRoot = BaseNote() + kMaxRootForOctave[octave_];
 		if (root > maxRoot)     root = maxRoot;
 		if (root < kPitchLoNote) root = kPitchLoNote;
 
@@ -481,17 +480,19 @@ private:
 		// Whole semitones pick the table entry; the Q8 remainder becomes cents
 		// and rides along with the fine tune and vibrato.
 		const int32_t glideSemi  = glideSemiQ8_ >> 8;
-		const int32_t glideCents = ((glideSemiQ8_ - (glideSemi << 8)) * 100) >> 8;
+		// Q4 cents, matching the vibrato and the fine tune.
+		const int32_t glideCentsQ4 = ((glideSemiQ8_ - (glideSemi << 8)) * 1600) >> 8;
 
 		uint32_t inc = SemiToIncQ32(glideSemi);
-		const int32_t cents = fine_ + vib + glideCents;
-		if (cents) inc = ApplyFineCents(inc, cents);
+		// fine_ is whole cents from the tuning knob; the other two are Q4.
+		const int32_t centsQ4 = (fine_ << 4) + vibQ4 + glideCentsQ4;
+		if (centsQ4) inc = ApplyFineCents(inc, centsQ4);
 		voice_.SetIncQ32(inc);
 
 		// The CV comes from the same two numbers, so voice and CV cannot
 		// disagree during a slur.
 		cvSemi_  = glideSemi;
-		cvCents_ = fine_ + vib + glideCents;
+		cvCentsQ4_ = centsQ4;
 	}
 
 	void __not_in_flash_func(UpdateCVs)()
@@ -512,7 +513,7 @@ private:
 		//
 		// The cache still earns its place when vibrato is at zero, which is the
 		// entire lower half of the knob.
-		const int32_t mv = PitchMillivolts(cvSemi_, cvCents_);
+		const int32_t mv = PitchMillivolts(cvSemi_, cvCentsQ4_);
 		if (mv != cvPitchLast_)
 		{
 			cvPitchLast_ = mv;
@@ -626,13 +627,13 @@ private:
 		{
 			int32_t d = captured_[slot] - captured_[kLearnOrder[j]];
 			if (d < 0) d = -d;
-			if (d < kCollisionMin15) collided = true;
+			if (d < kCollisionMin) collided = true;
 		}
 		if (collided) collisions_++;
 
 		learnStep_++;
 
-		if (learnStep_ >= kMaxLevels)
+		if (learnStep_ >= kNumLevels)
 		{
 			if (levels_.Analyse(captured_) == LearnResult::Failed)
 			{
@@ -681,6 +682,22 @@ private:
 		fine_   = fineKnob_.Update(KnobVal(Knob::Main), kFineDen,
 		                           kFineLo, kFineHi);
 
+		// X picks the OCTAVE while calibrating.
+		//
+		// Free to take, because X is the vibrato character in PLAY and the
+		// vibrato is silent during a calibration anyway — and the drone gives
+		// immediate feedback on which octave you have landed on, which is the
+		// only way to choose one by ear.
+		//
+		// Taken as an ABSOLUTE position rather than through TuneKnob's pickup:
+		// there are only four choices and they are an octave apart, so "the
+		// knob points at the octave" is easier to use than "the knob nudges the
+		// octave from wherever it happened to be".
+		int o = (KnobVal(Knob::X) * kNumOctaves) >> 12;
+		if (o < 0) o = 0;
+		if (o >= kNumOctaves) o = kNumOctaves - 1;
+		octave_ = o;
+
 		// Drone the scale root, fingering ignored, so there is a stable
 		// reference to tune against while the combos are being captured.
 		//
@@ -688,29 +705,29 @@ private:
 		// clamping the negative half away would make the drone ignore flat
 		// tuning while CV Out 1 still followed it, so the two would disagree
 		// precisely while being used to tune something.
-		int32_t root = kBaseNote + coarse_;
-		const int32_t maxRoot = kBaseNote + kMaxRootFor[scale_];
+		int32_t root = BaseNote() + coarse_;
+		const int32_t maxRoot = BaseNote() + kMaxRootForOctave[octave_];
 		if (root > maxRoot)      root = maxRoot;
 		if (root < kPitchLoNote) root = kPitchLoNote;
 
 		const int32_t semi = QuantizeNote(root, scale_, 0);
 		uint32_t inc = SemiToIncQ32(semi);
-		if (fine_) inc = ApplyFineCents(inc, fine_);
+		if (fine_) inc = ApplyFineCents(inc, fine_ << 4);
 		voice_.SetIncQ32(inc);
 
 		// The drone is a PURE SINE, deliberately.
 		//
-		// Folding is X's job in play, but during calibration X is not being
-		// touched and the reference note should be as easy to tune against as
-		// possible — a fold would put harmonics on it that beat against
-		// whatever you are tuning to.
+		// Folding is X's other job in play, but here X is the octave select and
+		// the reference note should be as easy to tune against as possible — a
+		// fold would put harmonics on it that beat against whatever you are
+		// tuning to.
 		voice_.SetFold(0);
 
 		// Keep the glide anchored, so the first note after calibration does not
 		// slide from wherever the drone happened to be.
 		glideSemiQ8_ = targetSemiQ8_ = (semi << 8);
-		cvSemi_  = semi;
-		cvCents_ = fine_;
+		cvSemi_    = semi;
+		cvCentsQ4_ = fine_ << 4;
 
 		UpdateCVs();
 	}
@@ -736,23 +753,6 @@ private:
 			LedBrightness(i, (mask & (1u << i)) ? on : off);
 	}
 
-	/// The minGap bar: how close this Four Voltages output came to 15-mode,
-	/// in quarters of the threshold.
-	///
-	/// This is the number worth writing down after a hardware session. A bare
-	/// pass/fail cannot steer anything — it does not say whether the patch was
-	/// five units short or eighty, so there is no way to tell "try the knob"
-	/// from "try another output".
-	void GapBar()
-	{
-		const int32_t g = levels_.MinGap15();
-		const int q = (g <= 0) ? 0
-		            : (g >= kGapNeeded15) ? 4
-		            : (int)((g * 4) / kGapNeeded15) + ((g * 4) % kGapNeeded15 ? 1 : 0);
-		for (int i = 0; i < 4; i++)
-			LedBrightness(i, (i < q) ? kLedFull : 0);
-	}
-
 	void LearnLeds()
 	{
 		switch (learnPhase_)
@@ -769,23 +769,16 @@ private:
 
 		case LearnPhase::Decided:
 		{
-			// Which mode won, and — when it did not win — how close it got.
-			const bool wide = (levels_.Mode() == LevelMode::Wide15);
-			if (wide)
-			{
-				const uint16_t b = static_cast<uint16_t>(
-					(phaseTimer_ * kLedFull) / kDecidedTicks);
-				SetRow(0xF, b, b);
-				const bool blink = ((phaseTimer_ >> 7) & 1) != 0;
-				LedBrightness(4, blink ? kLedFull : 0);
-				LedBrightness(5, blink ? kLedFull : 0);
-			}
-			else
-			{
-				GapBar();
-				LedBrightness(4, (phaseTimer_ > kDecidedTicks / 2) ? kLedDim : 0);
-				LedBrightness(5, 0);
-			}
+			// A clean fade on all six: calibration finished and installed.
+			//
+			// There is no mode announcement any more. The card used to walk
+			// fifteen combinations and blink out whether all of them or only
+			// ten had survived, which needed a whole LED vocabulary and a
+			// four-bar gap meter. Ten is the only mode now, so "it worked" is
+			// the entire message.
+			const uint16_t b = static_cast<uint16_t>(
+				(phaseTimer_ * kLedFull) / kDecidedTicks);
+			for (int i = 0; i < kNumLeds; i++) LedBrightness(i, b);
 			return;
 		}
 
@@ -819,15 +812,11 @@ private:
 			else                    LedOff(i);
 		}
 
-		// Popcount phase marker: one LED for singles, the other for pairs, both
-		// for triples, both blinking for the quad. "More light = more fingers",
-		// the same organising idea as the block itself.
+		// Phase marker: LED 4 through the four singles, LED 5 through the six
+		// pairs. Two phases, now that the triples are gone.
 		const uint8_t pop = kComboPop[kLearnOrder[learnStep_]];
-		const bool fast = ((uiTicks_ >> 5) & 1) != 0;
-		LedBrightness(4, (pop == 1 || pop == 3) ? kLedDim
-		                : (pop == 4 && fast)    ? kLedFull : 0);
-		LedBrightness(5, (pop == 2 || pop == 3) ? kLedDim
-		                : (pop == 4 && fast)    ? kLedFull : 0);
+		LedBrightness(4, (pop == 1) ? kLedDim : 0);
+		LedBrightness(5, (pop == 2) ? kLedDim : 0);
 	}
 
 	/// Has button `i` appeared in any combo captured so far?
@@ -867,11 +856,14 @@ private:
 		// The fingering, mirrored on the block.
 		SetRow(ComboLedMask(levels_.Current()), kLedDim, 0);
 
-		// LED 4: breath. LED 5: which mode calibration chose, because that is
-		// genuinely actionable — it says whether a third finger does anything.
+		// LED 4 is a level meter.
 		const int32_t air = breath_.BreathQ12();
 		LedBrightness(4, static_cast<uint16_t>((air * kLedFull) >> 12));
-		LedBrightness(5, (levels_.Mode() == LevelMode::Wide15) ? kLedGlow : 0);
+
+		// LED 5 used to report which combo mode was live. There is only one
+		// now, so it carries the calibration warning instead: dimly lit if two
+		// learned levels came out too close to tell apart reliably.
+		LedBrightness(5, levels_.CollisionCount() ? kLedGlow : 0);
 	}
 
 	// -----------------------------------------------------------------------
@@ -893,7 +885,7 @@ private:
 	int32_t    learnTimer_ = 0;
 	int32_t    phaseTimer_ = 0;
 	uint8_t    collisions_ = 0;
-	int32_t    captured_[kMaxLevels] = {};
+	int32_t    captured_[kNumLevels] = {};
 
 	bool    tapped_    = false;
 	bool    stopLast_  = false;
@@ -907,7 +899,8 @@ private:
 	int32_t  glideSemiQ8_  = 0;   ///< where the glide is now, Q8 semitones
 	int32_t  targetSemiQ8_ = 0;   ///< where it is heading
 	int32_t  cvSemi_       = kBaseNote;
-	int32_t  cvCents_      = 0;
+	int      octave_       = kDefaultOctave;
+	int32_t  cvCentsQ4_    = 0;
 	bool     pitchDirty_ = true;
 	int      regLast_    = 0;
 	int32_t  vibLast_    = 0;

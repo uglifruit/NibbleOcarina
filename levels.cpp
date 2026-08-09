@@ -45,7 +45,7 @@ void InsertionSort(int32_t *a, int n)
 
 void LevelTracker::Rebuild()
 {
-	const int n = activeCount_;
+	const int n = kNumLevels;
 
 	for (int i = 0; i < n; i++) sorted_[i] = static_cast<uint8_t>(i);
 
@@ -71,49 +71,26 @@ void LevelTracker::Rebuild()
 		slotOf_[sorted_[k]] = static_cast<uint8_t>(k);
 }
 
-void LevelTracker::SetTolerances()
-{
-	if (activeCount_ == kMaxLevels)
-	{
-		settleTol_   = kSettleTol15;
-		deadband_    = kDeadband15;
-		matchWindow_ = kMatchWindow15;
-	}
-	else
-	{
-		settleTol_   = kSettleTol10;
-		deadband_    = kDeadband10;
-		matchWindow_ = kMatchWindow10;
-	}
-}
-
 void LevelTracker::InitDefault()
 {
-	// An even spread over the ten, so an uncalibrated card still does something
-	// musical rather than nothing at all. Ten and not fifteen: an uncalibrated
-	// card should behave like the conservative case, and the LED indicator says
-	// it is guessing either way.
-	activeCount_ = kLevels10;
-	mode_        = LevelMode::Safe10;
-
-	for (int i = 0; i < kLevels10; i++)
-		level_[i] = kDefaultLo + (kDefaultHi - kDefaultLo) * i / (kLevels10 - 1);
+	// An even spread, so an uncalibrated card still does something musical
+	// rather than nothing at all.
+	for (int i = 0; i < kNumLevels; i++)
+		level_[i] = kDefaultLo + (kDefaultHi - kDefaultLo) * i / (kNumLevels - 1);
 
 	learned_    = false;
 	collisions_ = 0;
 	minGap_     = 0;
-	minGap15_   = 0;
 
-	SetTolerances();
 	Rebuild();
 }
 
-uint8_t LevelTracker::CountCollisions(int n, int32_t floor) const
+uint8_t LevelTracker::CountCollisions() const
 {
 	uint8_t c = 0;
-	for (int i = 0; i < n; i++)
+	for (int i = 0; i < kNumLevels; i++)
 		for (int j = 0; j < i; j++)
-			if (iabs(level_[i] - level_[j]) < floor && c < 255)
+			if (iabs(level_[i] - level_[j]) < kCollisionMin && c < 255)
 				c++;
 	return c;
 }
@@ -122,70 +99,33 @@ uint8_t LevelTracker::CountCollisions(int n, int32_t floor) const
 // The mode decision
 // ---------------------------------------------------------------------------
 
-LearnResult LevelTracker::Analyse(const int32_t *cap15)
+LearnResult LevelTracker::Analyse(const int32_t *cap10)
 {
-	// --- 1. Span check FIRST ---------------------------------------------
+	// Span check FIRST.
 	//
-	// Nothing patched into CV In 1 gives fifteen near-identical readings. That
-	// is a FAILURE, not "fall back to ten" — fifteen identical numbers do not
-	// become ten good ones. Refusing keeps whatever calibration was there
-	// before, which is strictly better than installing a card that looks
-	// calibrated and plays one note forever.
-	int32_t s[kMaxLevels];
-	for (int i = 0; i < kMaxLevels; i++) s[i] = cap15[i];
-	InsertionSort(s, kMaxLevels);
+	// Nothing patched into CV In 1 gives ten near-identical readings. Refusing
+	// keeps whatever calibration was there before, which is strictly better
+	// than installing a card that looks calibrated and plays one note forever.
+	int32_t s[kNumLevels];
+	for (int i = 0; i < kNumLevels; i++) s[i] = cap10[i];
+	InsertionSort(s, kNumLevels);
 
-	if (s[kMaxLevels - 1] - s[0] < kMinLearnSpan) return LearnResult::Failed;
+	if (s[kNumLevels - 1] - s[0] < kMinLearnSpan) return LearnResult::Failed;
 
-	// --- 2. How tight is the tightest gap, across all fifteen? -----------
-	int32_t minGap15 = s[1] - s[0];
-	for (int i = 2; i < kMaxLevels; i++)
+	// How tight is the tightest gap? Reported so a hardware session can record
+	// how well separated this particular Four Voltages output actually is.
+	minGap_ = s[1] - s[0];
+	for (int i = 2; i < kNumLevels; i++)
 	{
 		const int32_t g = s[i] - s[i - 1];
-		if (g < minGap15) minGap15 = g;
+		if (g < minGap_) minGap_ = g;
 	}
 
-	// --- 3. And across only the ten of the fallback set? ------------------
-	//
-	// Combo indices 0..9 ARE the 10-mode set, by construction of the enum in
-	// ocarina.h, so this needs no mapping table.
-	int32_t t[kLevels10];
-	for (int i = 0; i < kLevels10; i++) t[i] = cap15[i];
-	InsertionSort(t, kLevels10);
+	for (int i = 0; i < kNumLevels; i++) level_[i] = cap10[i];
 
-	int32_t minGap10 = t[1] - t[0];
-	for (int i = 2; i < kLevels10; i++)
-	{
-		const int32_t g = t[i] - t[i - 1];
-		if (g < minGap10) minGap10 = g;
-	}
-
-	// --- 4. Install and decide -------------------------------------------
-	for (int i = 0; i < kMaxLevels; i++) level_[i] = cap15[i];
-	minGap15_ = minGap15;
-
-	int32_t floor;
-	if (minGap15 >= kGapNeeded15)
-	{
-		mode_        = LevelMode::Wide15;
-		activeCount_ = kMaxLevels;
-		minGap_      = minGap15;
-		floor        = kCollisionMin15;
-	}
-	else
-	{
-		mode_        = LevelMode::Safe10;
-		activeCount_ = kLevels10;
-		minGap_      = minGap10;
-		floor        = kCollisionMin10;
-	}
-
-	// Collisions are counted for the CHOSEN set only: warning about a 15-mode
-	// collision after falling back to ten is noise the player cannot act on.
-	collisions_ = CountCollisions(activeCount_, floor);
+	collisions_ = CountCollisions();
 	learned_    = true;
 
-	SetTolerances();
 	Rebuild();
 	return LearnResult::Ok;
 }
@@ -204,7 +144,7 @@ void LevelTracker::ResetHeld()
 
 int8_t LevelTracker::Match(int32_t v, int8_t cur) const
 {
-	const int n = activeCount_;
+	const int n = kNumLevels;
 
 	// Walk the sorted thresholds. Fifteen entries at most, so a linear walk
 	// beats a binary search on an M0+ once branch cost is counted.
@@ -224,17 +164,17 @@ int8_t LevelTracker::Match(int32_t v, int8_t cur) const
 	if (cur >= 0 && cur < n && cand != cur)
 	{
 		const int curSlot = slotOf_[cur];
-		if (curSlot == k + 1 && v > thresh_[k] - deadband_)
+		if (curSlot == k + 1 && v > thresh_[k] - kDeadband)
 			cand = cur;
-		else if (curSlot == k - 1 && k >= 1 && v < thresh_[k - 1] + deadband_)
+		else if (curSlot == k - 1 && k >= 1 && v < thresh_[k - 1] + kDeadband)
 			cand = cur;
 	}
 
 	// The value fell in this slot, but is it actually NEAR the level that owns
-	// the slot? In 10-mode a triple or the all-four combo lands somewhere in
-	// range but far from any learned centre, and rejecting on distance is what
-	// makes them safely ignorable rather than silently snapping to a neighbour.
-	if (iabs(v - level_[cand]) > matchWindow_) return kComboNone;
+	// the slot? A triple or the all-four combo lands somewhere in range but far
+	// from any learned centre, and rejecting on distance is what makes them
+	// safely ignorable rather than silently snapping to a neighbour.
+	if (iabs(v - level_[cand]) > kMatchWindow) return kComboNone;
 	return cand;
 }
 
@@ -257,7 +197,7 @@ LevelEvent __not_in_flash_func(LevelTracker::Step)(int32_t cvIn, int8_t &idx)
 	// The mean is RESTARTED on every excursion rather than a counter merely
 	// being reset, so a slow drift can never accumulate into a false settle:
 	// each tick outside tolerance begins a fresh plateau.
-	if (candTicks_ > 0 && iabs(smooth_ - candMean_) <= settleTol_)
+	if (candTicks_ > 0 && iabs(smooth_ - candMean_) <= kSettleTol)
 	{
 		candMean_ = slew_exact(candMean_, smooth_, 4);
 		if (candTicks_ < kSettleTicks) candTicks_++;

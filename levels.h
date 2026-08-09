@@ -40,8 +40,9 @@
 //   Schmitt        hysteresis biased toward the level already held, so two
 //                  close neighbours cannot flicker.
 //   Match window   a settled value far from EVERY learned centre is rejected
-//                  and the current note stays latched. In 10-mode this is what
-//                  makes triples and the quad safely ignorable.
+//                  and the current note stays latched. This is what makes the
+//                  triples and the all-four combo safely ignorable — they land
+//                  somewhere in range but far from any learned level.
 //   primed_        swallow exactly one settle at power-on, because the module
 //                  is already sitting at whatever was last pressed.
 
@@ -58,14 +59,8 @@ enum class LevelEvent : uint8_t {
 
 /// What a completed calibration decided.
 enum class LearnResult : uint8_t {
-	Ok,        ///< installed; check Mode() for which set is active
+	Ok,        ///< installed
 	Failed,    ///< degenerate capture, nothing installed, old calibration kept
-};
-
-/// Which set of combinations is live.
-enum class LevelMode : uint8_t {
-	Safe10,    ///< four singles + six pairs — NIBBLE's proven set
-	Wide15,    ///< all fifteen
 };
 
 class LevelTracker
@@ -74,14 +69,16 @@ public:
 	/// Install the even-spread default. Safe to call before any learn.
 	void InitDefault();
 
-	/// Measure a completed 15-capture set, choose the mode, and install it.
+	/// Install a completed 10-capture set.
 	///
-	/// This is where the card's central question gets answered by the hardware
-	/// rather than by us: if the tightest adjacent gap across all fifteen
-	/// clears kGapNeeded15, all fifteen become playable; otherwise it falls
-	/// back to the ten and MinGap15() reports how close it got, so the player
-	/// can try another Four Voltages output and see whether it improved.
-	LearnResult Analyse(const int32_t *cap15);
+	/// The card used to walk all FIFTEEN combinations and decide at the end
+	/// whether they were separable, falling back to ten if not. Ten is now the
+	/// only mode: fifteen was reported as simply too many to play, and the
+	/// triples are the awkward fingerings whether or not the voltages resolve.
+	///
+	/// Dropping the mode decision also removes the gap bar, the 15-mode
+	/// tolerances, and five taps from every calibration.
+	LearnResult Analyse(const int32_t *cap10);
 
 	/// Forget which combo is held, without touching the learned table.
 	///
@@ -110,27 +107,20 @@ public:
 	/// The settled value, valid when Settled(). This is what a capture takes.
 	int32_t SettledValue() const { return candMean_; }
 
-	bool      Learned() const        { return learned_; }
-	LevelMode Mode() const           { return mode_; }
-	int       ActiveCount() const    { return activeCount_; }
-	uint8_t   CollisionCount() const { return collisions_; }
+	bool    Learned() const        { return learned_; }
+	uint8_t CollisionCount() const { return collisions_; }
 
-	/// The tightest adjacent gap in the ACTIVE set.
+	/// The tightest adjacent gap between the ten learned levels.
+	///
+	/// Worth recording after a hardware session: it says how well separated
+	/// this Four Voltages output actually is, which decides whether trying
+	/// another one is worthwhile.
 	int32_t MinGap() const { return minGap_; }
 
-	/// The tightest adjacent gap across all FIFTEEN, whichever mode won.
-	///
-	/// This is the number the player is shown as a 4-bit bar after a fallback,
-	/// and it is the one worth writing down after a hardware session: it says
-	/// whether this Four Voltages output was nearly good enough or nowhere
-	/// near, which is what decides whether trying another one is worthwhile.
-	int32_t MinGap15() const { return minGap15_; }
-
 private:
-	int8_t Match(int32_t v, int8_t cur) const;
-	void   Rebuild();
-	void   SetTolerances();
-	uint8_t CountCollisions(int n, int32_t floor) const;
+	int8_t  Match(int32_t v, int8_t cur) const;
+	void    Rebuild();
+	uint8_t CountCollisions() const;
 
 	// --- learned data. RAM ONLY, never flash -----------------------------
 	// The Four Voltages knob moves every one of these, so a saved calibration
@@ -138,25 +128,14 @@ private:
 	// looks calibrated and plays the wrong notes. Not persisting is a
 	// deliberate design decision, not an omission. Nothing in this card is
 	// written to flash at all.
-	int32_t level_[kMaxLevels]      = {};
-	uint8_t sorted_[kMaxLevels]     = {};   // combo indices, ascending by level_
-	uint8_t slotOf_[kMaxLevels]     = {};   // inverse of sorted_, for hysteresis
-	int32_t thresh_[kMaxLevels - 1] = {};   // midpoints between adjacent levels
+	int32_t level_[kNumLevels]      = {};
+	uint8_t sorted_[kNumLevels]     = {};   // combo indices, ascending by level_
+	uint8_t slotOf_[kNumLevels]     = {};   // inverse of sorted_, for hysteresis
+	int32_t thresh_[kNumLevels - 1] = {};   // midpoints between adjacent levels
 
-	bool      learned_    = false;
-	uint8_t   collisions_ = 0;
-	LevelMode mode_       = LevelMode::Safe10;
-	int       activeCount_ = kLevels10;
-	int32_t   minGap_     = 0;
-	int32_t   minGap15_   = 0;
-
-	// --- active tolerances, swapped by the mode decision -----------------
-	// Held as members rather than read as constants so that Match() and Step()
-	// are mode-agnostic: there is exactly one detector, and 10-mode is it with
-	// activeCount_ = 10. Two implementations would drift.
-	int32_t settleTol_   = kSettleTol10;
-	int32_t deadband_    = kDeadband10;
-	int32_t matchWindow_ = kMatchWindow10;
+	bool    learned_    = false;
+	uint8_t collisions_ = 0;
+	int32_t minGap_     = 0;
 
 	// --- running detection -----------------------------------------------
 	int32_t smooth_    = 0;

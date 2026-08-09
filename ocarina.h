@@ -64,12 +64,19 @@ constexpr int kNumSingles = 4;
 constexpr int kNumPairs   = 6;
 constexpr int kNumTriples = 4;
 
-/// Every non-empty subset of four buttons. FIFTEEN, not sixteen — see the
-/// no-rest-voltage note above.
-constexpr int kMaxLevels = 15;
-
-/// The fallback set: singles + pairs, exactly NIBBLE's ten.
-constexpr int kLevels10 = 10;
+/// The playable combinations: four singles and six pairs.
+///
+/// Four buttons can express fifteen non-empty subsets (not sixteen — see the
+/// no-rest-voltage note above), and the card used to walk all fifteen and
+/// decide at the end whether the voltages separated well enough to use them.
+///
+/// TEN is now the only mode. Fifteen was reported from hardware as simply too
+/// many to play: the triples are awkward fingerings whether or not the resistor
+/// network resolves them, and the extra five taps made every calibration
+/// longer. The triples and the all-four combo are still SAFE — they land far
+/// from any learned level and are rejected by the match window, so pressing one
+/// leaves the current note alone rather than jumping somewhere wrong.
+constexpr int kNumLevels = 10;
 
 /// Combo indices, ordered by POPCOUNT then lexicographically. The ordering is
 /// load-bearing in three ways:
@@ -90,7 +97,7 @@ enum Combo : int8_t {
 };
 
 /// Button bitmask per combo. Bit i == button i (A=0, B=1, C=2, D=3).
-constexpr uint8_t kComboMask[kMaxLevels] = {
+constexpr uint8_t kComboMask[15] = {
 	0x1, 0x2, 0x4, 0x8,                    // A    B    C    D
 	0x3, 0x5, 0x9, 0x6, 0xA, 0xC,          // AB   AC   AD   BC   BD   CD
 	0x7, 0xB, 0xD, 0xE,                    // ABC  ABD  ACD  BCD
@@ -99,7 +106,7 @@ constexpr uint8_t kComboMask[kMaxLevels] = {
 
 /// How many buttons each combo holds down. Used for the calibration phase
 /// marker on LEDs 4/5 ("more light = more fingers").
-constexpr uint8_t kComboPop[kMaxLevels] = {
+constexpr uint8_t kComboPop[15] = {
 	1, 1, 1, 1,  2, 2, 2, 2, 2, 2,  3, 3, 3, 3,  4
 };
 
@@ -107,7 +114,7 @@ constexpr uint8_t kComboPop[kMaxLevels] = {
 /// as the Four Voltages buttons, so the panel mirrors the fingering directly.
 static inline uint8_t ComboLedMask(int8_t combo)
 {
-	if (combo < 0 || combo >= kMaxLevels) return 0;
+	if (combo < 0 || combo >= 15) return 0;
 	return kComboMask[combo];
 }
 
@@ -118,8 +125,8 @@ static inline uint8_t ComboLedMask(int8_t combo)
 /// subsets and popcounts, and having one definition beats two.
 static inline bool IsStrictSubsetOf(int8_t sub, int8_t sup)
 {
-	if (sub < 0 || sub >= kMaxLevels) return false;
-	if (sup < 0 || sup >= kMaxLevels) return false;
+	if (sub < 0 || sub >= 15) return false;
+	if (sup < 0 || sup >= 15) return false;
 	const uint8_t a = kComboMask[sub], b = kComboMask[sup];
 	return (a != b) && ((a & b) == a);
 }
@@ -128,19 +135,14 @@ static inline bool IsStrictSubsetOf(int8_t sub, int8_t sup)
 ///
 /// Two properties matter, and both are deliberate:
 ///
-///   1. The first TEN entries are NIBBLE's kLearnOrder verbatim. If the mode
-///      decision falls back to ten, the captures already taken ARE the right
-///      ten in the right order — nothing is re-walked or discarded. That is
-///      why the learn walks all fifteen unconditionally rather than probing.
+///   1. It is NIBBLE's kLearnOrder verbatim, which is the one part of this
+///      card's calibration with hardware history behind it.
 ///
 ///   2. It is geometric on the 2x2 LED block, so the player can read the next
-///      target off the panel: singles, then rows, columns, diagonals, then the
-///      triples with the DARK led walking D -> C -> B -> A, then all four.
-constexpr uint8_t kLearnOrder[kMaxLevels] = {
+///      target off the panel: singles, then rows, then columns, then diagonals.
+constexpr uint8_t kLearnOrder[kNumLevels] = {
 	kA, kB, kC, kD,
-	kAB, kCD, kAC, kBD, kAD, kBC,
-	kABC, kABD, kACD, kBCD,
-	kABCD
+	kAB, kCD, kAC, kBD, kAD, kBC
 };
 
 // ---------------------------------------------------------------------------
@@ -150,28 +152,15 @@ constexpr uint8_t kLearnOrder[kMaxLevels] = {
 // All in raw CV-in units: signed 12-bit, -2048..2047 over roughly +/-6V, so
 // about 2.9mV per unit.
 //
-// The 10-mode values are NIBBLE's, unchanged. They are themselves estimates
-// rather than measurements — nobody has ever recorded a real Four Voltages
-// spread — but they are estimates that have survived five hardware sessions,
-// which is more than can be said for anything new. DO NOT "IMPROVE" THEM.
+// These are NIBBLE's values, unchanged. They are themselves estimates rather
+// than measurements — nobody has ever recorded a real Four Voltages spread —
+// but they are estimates that have survived several hardware sessions, which is
+// more than can be said for anything new. DO NOT "IMPROVE" THEM.
 
-constexpr int32_t kSettleTol10    = 24;
-constexpr int32_t kDeadband10     = 16;
-constexpr int32_t kMatchWindow10  = 96;
-constexpr int32_t kCollisionMin10 = 64;
-
-/// 15-mode tolerances, shrunk by roughly two thirds: fifteen levels across the
-/// same span leave gaps about 10/15 as wide.
-///
-/// kSettleTol is deliberately NOT scaled all the way down. It is set by the ADC
-/// noise floor, which does not shrink because we asked for more levels. 16
-/// units (~46mV) is the practical floor — below that the plateau detector stops
-/// settling at all and every capture reads "still moving", which presents as a
-/// calibration that cannot be completed rather than as a tolerance being wrong.
-constexpr int32_t kSettleTol15    = 16;
-constexpr int32_t kDeadband15     = 10;
-constexpr int32_t kMatchWindow15  = 56;
-constexpr int32_t kCollisionMin15 = 40;
+constexpr int32_t kSettleTol    = 24;
+constexpr int32_t kDeadband     = 16;
+constexpr int32_t kMatchWindow  = 96;
+constexpr int32_t kCollisionMin = 64;
 
 /// How long a plateau must hold before it counts. 37 ticks at 3kHz = 12.3ms.
 ///
@@ -197,26 +186,6 @@ constexpr int32_t kDefaultHi =  1500;
 /// 400 units is about 1.2V; ten levels genuinely spread cover several.
 constexpr int32_t kMinLearnSpan = 400;
 
-/// A 15-level calibration is accepted only if its tightest adjacent gap is at
-/// least this wide. This is the whole gamble in one number.
-///
-/// Derivation:
-///   kMatchWindow15 must be under HALF the smallest gap, or two neighbouring
-///   levels' accept-windows overlap and the "reject anything far from a learned
-///   centre" rule silently stops rejecting.        2 * 56  = 112
-///   + kSettleTol15, for where the plateau may actually land       -> 128
-///   + kDeadband15,  for the Schmitt pull                          -> 138
-///   round up for drift while the card warms up                    -> 144
-///
-/// Sanity check, and it is sobering: fifteen levels each needing 144 units of
-/// clear gap require 14 * 144 = 2016 units of span, which is about 5.9V across
-/// a +/-6V input — nearly the entire range, near-perfectly evenly spaced.
-/// Resistor networks are rarely that even. TEN levels need 9 * 144 = 1296
-/// units, about 3.8V, which is comfortable. Expect 10-mode on most hardware;
-/// 15-mode is a bonus the module grants or withholds, and §5.4's LED readout
-/// exists so the player can tell which and why.
-constexpr int32_t kGapNeeded15 = 144;
-
 // ---------------------------------------------------------------------------
 // Pitch
 // ---------------------------------------------------------------------------
@@ -234,17 +203,30 @@ static inline int32_t SemisToMillivolts(int32_t semis)
 	return (semis * kMvPerSemiQ8 + 128) >> 8;
 }
 
-/// The scale root, as a MIDI note.
+/// The scale root, as a MIDI note — the DEFAULT octave.
 ///
-/// The BORE decides this, not musical taste: the delay line has to hold a whole
-/// wavelength of the lowest note, so the instrument physically cannot play far
-/// below C2. That is where the root sits.
+/// C4 (262Hz), which is a concert flute's lowest note. The card used to sit at
+/// C2 and it was reported as being "right in the low end of notes" when what
+/// was wanted was a flute; two octaves down is sub-bass, not a wind instrument.
+///
+/// The octave is selectable during calibration (X knob), from C2 up to C5, so
+/// the low registers are still reachable — they are just no longer the default.
 ///
 /// CV Out 1 does NOT emit this as an absolute MIDI pitch. It emits semitones
 /// ABOVE THE ROOT, so the root leaves the card at 0V exactly as NIBBLE's does.
-/// See PitchMillivolts() in pitch.h for why: an absolute mapping would start
-/// every patch 3V up and put the top of an arpeggio scale past the 6V rail.
-constexpr int kBaseNote = 36;
+/// See PitchMillivolts() in pitch.h.
+constexpr int kBaseNote = 60;
+
+/// The octaves the X knob offers during calibration, as MIDI base notes.
+///
+/// C2 is the old default and is kept because a sub-bass drone has its uses; C4
+/// is a concert flute; C5 is piccolo/soprano-ocarina territory. A 7-note scale
+/// from C5 runs to C7, which is inside the voice's range.
+constexpr int kNumOctaves = 4;
+constexpr int kOctaveBase[kNumOctaves] = { 36, 48, 60, 72 };
+
+/// Which entry of kOctaveBase the card starts on — C4.
+constexpr int kDefaultOctave = 2;
 
 /// The most the root may ever be transposed, in semitones — one octave.
 ///

@@ -25,17 +25,19 @@ namespace nib {
 /// tune has room to bend flat without running off the end.
 constexpr int kPitchLoNote = 36;
 
-/// The highest note the voice will play: MIDI 91 (G6, 1568Hz).
+/// The highest note the voice will play: MIDI 108 (C8, 4186Hz).
 ///
-/// v1 capped this at 75, and that limit was an artefact of the waveguide: above
-/// about MIDI 78 its jet tap fell under ~20 samples, the interpolator could no
-/// longer place the jet's phase, and the bore abandoned its fundamental for the
-/// octave — silently, while CV Out 1 kept reporting the fingered note.
+/// Set by the WAVEFOLDER, not by the oscillator. A pure sine would not alias
+/// until its fundamental passed Nyquist, around MIDI 135 — but Audio Out 2
+/// folds, and folding generates harmonics. At MIDI 108 the fifth harmonic is
+/// 20.9kHz, just under the 24kHz Nyquist; at MIDI 112 it is 26.4kHz and folds
+/// back into the audible band as an inharmonic whistle.
 ///
-/// The voice is an oscillator now, so nothing has to pick its own mode and the
-/// ceiling is simply where the instrument stops being musical. tools/pitchsim.py
-/// confirms 2.3 cents worst case all the way up.
-constexpr int kPitchHiNote = 91;
+/// v1 capped this at 75 as an artefact of the waveguide (its jet tap ran out of
+/// resolution and the bore abandoned its fundamental). v3 raised it to 91, which
+/// then became the binding limit once the default octave moved up to C4 — the
+/// top of a scale from C5 reaches MIDI 100 and would have clamped silently.
+constexpr int kPitchHiNote = 108;
 
 // ---------------------------------------------------------------------------
 // Semitone -> delay length
@@ -73,10 +75,20 @@ static inline uint32_t SemiToIncQ32(int semi)
 	return kIncQ32Base[st] << oct;
 }
 
-/// ln(2)/1200 in Q24 — the per-cent exponent for the fine-tune ratio.
-constexpr int32_t kCentQ24 = 9691;
+/// ln(2)/1200/16 in Q28 — the per-SIXTEENTH-of-a-cent exponent.
+///
+/// Cents are carried in Q4 (sixteenths) rather than whole numbers, and that is
+/// not decoration: vibrato depth passes through here, and at small depths whole
+/// cents quantise the entire modulation to ZERO. The result was a vibrato that
+/// did nothing at all until its depth reached two cents and then appeared
+/// abruptly — an audible step reported from hardware.
+///
+/// The constant is numerically identical to the old Q24 per-whole-cent value,
+/// because dividing by 16 and shifting 4 bits further cancel exactly. Only the
+/// shift changes.
+constexpr int32_t kCentQ28 = 9691;
 
-/// Bend a Q32 phase increment by a fine-tune offset in cents.
+/// Bend a Q32 phase increment by a fine-tune offset in Q4 CENTS (sixteenths).
 ///
 /// The exact ratio is 2^(c/1200) = exp(x) where x = c * ln2/1200. Note the
 /// SIGN: sharpening raises the increment, where in v1 it shortened a delay.
@@ -92,18 +104,18 @@ constexpr int32_t kCentQ24 = 9691;
 ///
 /// The 64-bit multiplies here are fine (~10 cycles each). This runs at control
 /// rate on a note change, never per sample. A 64-bit DIVIDE would not be.
-static inline uint32_t ApplyFineCents(uint32_t incQ32, int32_t cents)
+static inline uint32_t ApplyFineCents(uint32_t incQ32, int32_t centsQ4)
 {
 	const uint32_t v = incQ32;
 
-	// x = cents * ln2/1200, in Q24. Signed: negative cents flatten.
-	const int32_t xQ24 = cents * kCentQ24;
+	// x = cents * ln2/1200, in Q28. Signed: negative cents flatten.
+	const int32_t xQ28 = centsQ4 * kCentQ28;
 
 	const int32_t lin = static_cast<int32_t>(
-		(static_cast<int64_t>(v) * xQ24) >> 24);
+		(static_cast<int64_t>(v) * xQ28) >> 28);
 
 	const int32_t quad = static_cast<int32_t>(
-		(((static_cast<int64_t>(xQ24) * xQ24) >> 24) * static_cast<int64_t>(v)) >> 25);
+		(((static_cast<int64_t>(xQ28) * xQ28) >> 28) * static_cast<int64_t>(v)) >> 29);
 
 	return static_cast<uint32_t>(static_cast<int64_t>(v) + lin + quad);
 }
@@ -112,27 +124,17 @@ static inline uint32_t ApplyFineCents(uint32_t incQ32, int32_t cents)
 // Fitting the scales into the bore
 // ---------------------------------------------------------------------------
 
-/// How far the root may be transposed, PER SCALE, in semitones.
+/// How far the root may be transposed, per OCTAVE, in semitones.
 ///
-/// Every scale now gets the full octave, and every scale reaches all fifteen
-/// degrees — see kUsableDegrees. That was NOT true in v1: the waveguide only
-/// spanned MIDI 36..75, and fifteen degrees of a 4-note arpeggio covers 43
-/// semitones, so the two arpeggios lost their top degrees and could not be
-/// transposed at all.
+/// The limit is per-octave rather than per-scale now, because the octave select
+/// moves the whole instrument and the top octave is the one that runs out of
+/// headroom: from C5, ten degrees of the widest scale plus a full octave of
+/// transpose would reach MIDI 116, past the ceiling.
 ///
-/// The table is kept rather than collapsed to a single constant because the
-/// constraint is real and will bite again the moment kPitchHiNote moves or a
-/// wider scale is added. The failure it guards against is SILENT: past the top
-/// note the pitch clamps while CV Out 1 keeps climbing, so the card plays one
-/// note and tells the rack another. tools/pitchsim.py asserts it every run.
-constexpr uint8_t kMaxRootFor[12] = {
-	12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12
-};
-
-/// How many of the fifteen degrees each scale can reach. All of them, now.
-constexpr uint8_t kUsableDegrees[12] = {
-	15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15
-};
+/// The failure this guards against is SILENT: past kPitchHiNote the pitch
+/// clamps while CV Out 1 keeps climbing, so the card plays one note and tells
+/// the rack another. tools/pitchsim.py asserts it every run.
+constexpr uint8_t kMaxRootForOctave[4] = { 12, 12, 12, 8 };
 
 // ---------------------------------------------------------------------------
 // Semitone -> millivolts
@@ -152,6 +154,14 @@ constexpr uint8_t kUsableDegrees[12] = {
 /// Coarse tune is folded into `semi` by the caller (it shifts the root), so
 /// only the fine offset is applied here.
 ///
+/// The reference is FIXED at kBaseNote rather than following the octave select.
+/// That is deliberate: it means the octave switch moves the CV output too, so
+/// an oscillator patched to CV Out 1 changes octave with the card instead of
+/// staying put while the internal voice moves. The alternative — re-referencing
+/// so the root is always 0V — would make the octave control silently do nothing
+/// outside the box, which is the sort of disagreement between the two pitch
+/// paths this file exists to prevent.
+///
 /// At 1000mV/octave, one cent is 1000/1200 = 0.8333mV. In Q10 that is
 /// round(0.8333 * 1024) = 853, giving 0.83301mV — within 0.04% of exact.
 ///
@@ -161,9 +171,12 @@ constexpr uint8_t kUsableDegrees[12] = {
 /// the fine control, which reads as "the tuning knob is badly calibrated"
 /// rather than as an arithmetic error. tools/pitchsim.py caught it by
 /// cross-checking against the bore.
-static inline int32_t PitchMillivolts(int32_t semi, int32_t fineCents)
+/// `fineCentsQ4` is in SIXTEENTHS of a cent, matching ApplyFineCents(), so the
+/// two pitch paths cannot drift apart at small vibrato depths.
+static inline int32_t PitchMillivolts(int32_t semi, int32_t fineCentsQ4)
 {
-	return SemisToMillivolts(semi - kBaseNote) + ((fineCents * 853 + 512) >> 10);
+	// 853/1024 mV per cent, then /16 for the Q4 -> one shift of 14.
+	return SemisToMillivolts(semi - kBaseNote) + ((fineCentsQ4 * 853 + 8192) >> 14);
 }
 
 } // namespace nib

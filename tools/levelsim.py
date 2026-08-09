@@ -19,8 +19,7 @@ import sys
 # Vocabulary — mirrors ocarina.h
 # ---------------------------------------------------------------------------
 
-MAX_LEVELS = 15
-LEVELS_10  = 10
+NUM_LEVELS = 10
 NUM_SINGLES = 4
 
 (A, B, C, D,
@@ -39,29 +38,24 @@ COMBO_MASK = [0x1, 0x2, 0x4, 0x8,
               0x7, 0xB, 0xD, 0xE,
               0xF]
 
-LEARN_ORDER = [A, B, C, D,
-               AB, CD, AC, BD, AD, BC,
-               ABC, ABD, ACD, BCD,
-               ABCD]
+LEARN_ORDER = [A, B, C, D, AB, CD, AC, BD, AD, BC]
 
-# NIBBLE's learn order, for the "the fallback really is NIBBLE" assertion.
+# NIBBLE's learn order. Ours IS NIBBLE's now -- the card walked fifteen and
+# picked a mode until hardware reported fifteen as simply too many to play.
 NIBBLE_LEARN_ORDER = [A, B, C, D, AB, CD, AC, BD, AD, BC]
 
 CTRL_RATE = 3000
 
-SETTLE_TOL_10, DEADBAND_10, MATCH_WINDOW_10, COLLISION_MIN_10 = 24, 16, 96, 64
-SETTLE_TOL_15, DEADBAND_15, MATCH_WINDOW_15, COLLISION_MIN_15 = 16, 10, 56, 40
+SETTLE_TOL, DEADBAND, MATCH_WINDOW, COLLISION_MIN = 24, 16, 96, 64
 
 SETTLE_TICKS   = CTRL_RATE // 80        # 37
 CV_SMOOTH_SHIFT = 3
 DEFAULT_LO, DEFAULT_HI = -1500, 1500
 MIN_LEARN_SPAN = 400
-GAP_NEEDED_15  = 144
 
 # Events
 EV_NONE, EV_TRIGGER = 0, 1
 
-MODE_15, MODE_10 = 15, 10
 RESULT_OK, RESULT_FAILED = "ok", "failed"
 
 
@@ -105,20 +99,13 @@ def iabs(v):
 
 class LevelTracker:
     def __init__(self):
-        self.level = [0] * MAX_LEVELS
+        self.level = [0] * NUM_LEVELS
         self.sorted_ = []
         self.slot_of = {}
         self.thresh = []
         self.learned = False
         self.collisions = 0
-        self.active = LEVELS_10
-        self.mode = MODE_10
         self.min_gap = 0
-        self.min_gap_15 = 0
-
-        self.settle_tol = SETTLE_TOL_10
-        self.deadband = DEADBAND_10
-        self.match_window = MATCH_WINDOW_10
 
         self.smooth = 0
         self.cand_mean = 0
@@ -129,73 +116,45 @@ class LevelTracker:
     # -- table construction --------------------------------------------------
 
     def _rebuild(self):
-        n = self.active
+        n = NUM_LEVELS
         self.sorted_ = sorted(range(n), key=lambda i: self.level[i])
         self.thresh = [(self.level[self.sorted_[k]] +
                         self.level[self.sorted_[k + 1]]) >> 1
                        for k in range(n - 1)]
         self.slot_of = {c: k for k, c in enumerate(self.sorted_)}
 
-    def _set_tolerances(self):
-        if self.active == MAX_LEVELS:
-            self.settle_tol, self.deadband, self.match_window = (
-                SETTLE_TOL_15, DEADBAND_15, MATCH_WINDOW_15)
-        else:
-            self.settle_tol, self.deadband, self.match_window = (
-                SETTLE_TOL_10, DEADBAND_10, MATCH_WINDOW_10)
-
     def init_default(self):
-        self.active = LEVELS_10
-        self.mode = MODE_10
-        for i in range(LEVELS_10):
+        for i in range(NUM_LEVELS):
             self.level[i] = (DEFAULT_LO +
-                             (DEFAULT_HI - DEFAULT_LO) * i // (LEVELS_10 - 1))
+                             (DEFAULT_HI - DEFAULT_LO) * i // (NUM_LEVELS - 1))
         self.learned = False
         self.collisions = 0
-        self._set_tolerances()
         self._rebuild()
 
-    def _count_collisions(self, n, floor):
+    def _count_collisions(self):
         c = 0
-        for i in range(n):
+        for i in range(NUM_LEVELS):
             for j in range(i):
-                if iabs(self.level[i] - self.level[j]) < floor:
+                if iabs(self.level[i] - self.level[j]) < COLLISION_MIN:
                     c += 1
         return c
 
-    def analyse(self, cap15):
-        """Install a 15-capture set, measure it, and choose the mode.
+    def analyse(self, cap10):
+        """Install a completed 10-capture set.
 
         Returns RESULT_OK or RESULT_FAILED. On FAILED nothing is installed and
         the previous calibration survives.
         """
-        s = sorted(cap15)
-        span = s[-1] - s[0]
-        if span < MIN_LEARN_SPAN:
-            # Nothing patched into CV In 1. That is a FAILURE, not "use ten" —
-            # fifteen identical readings do not become ten good ones.
+        srt = sorted(cap10)
+        if srt[-1] - srt[0] < MIN_LEARN_SPAN:
+            # Nothing patched into CV In 1. A FAILURE, not a degraded mode --
+            # ten identical readings do not become a usable calibration.
             return RESULT_FAILED
 
-        min_gap_15 = min(s[i] - s[i - 1] for i in range(1, MAX_LEVELS))
-
-        t = sorted(cap15[:LEVELS_10])
-        min_gap_10 = min(t[i] - t[i - 1] for i in range(1, LEVELS_10))
-
-        self.level = list(cap15)
-        self.min_gap_15 = min_gap_15
-
-        if min_gap_15 >= GAP_NEEDED_15:
-            self.mode, self.active = MODE_15, MAX_LEVELS
-            self.min_gap = min_gap_15
-            floor = COLLISION_MIN_15
-        else:
-            self.mode, self.active = MODE_10, LEVELS_10
-            self.min_gap = min_gap_10
-            floor = COLLISION_MIN_10
-
-        self.collisions = self._count_collisions(self.active, floor)
+        self.min_gap = min(srt[i] - srt[i - 1] for i in range(1, NUM_LEVELS))
+        self.level = list(cap10)
+        self.collisions = self._count_collisions()
         self.learned = True
-        self._set_tolerances()
         self._rebuild()
         return RESULT_OK
 
@@ -205,7 +164,7 @@ class LevelTracker:
     # -- matching ------------------------------------------------------------
 
     def match(self, v, cur):
-        n = self.active
+        n = NUM_LEVELS
         k = 0
         while k < n - 1 and v > self.thresh[k]:
             k += 1
@@ -216,14 +175,14 @@ class LevelTracker:
         # making it wait would add latency for nothing.
         if cur >= 0 and cand != cur and cur in self.slot_of:
             cur_slot = self.slot_of[cur]
-            if cur_slot == k + 1 and v > self.thresh[k] - self.deadband:
+            if cur_slot == k + 1 and v > self.thresh[k] - DEADBAND:
                 cand = cur
-            elif cur_slot == k - 1 and k >= 1 and v < self.thresh[k - 1] + self.deadband:
+            elif cur_slot == k - 1 and k >= 1 and v < self.thresh[k - 1] + DEADBAND:
                 cand = cur
 
         # In range of the slot, but is it NEAR the level that owns the slot?
         # In 10-mode this is what makes triples and the quad safely ignorable.
-        if iabs(v - self.level[cand]) > self.match_window:
+        if iabs(v - self.level[cand]) > MATCH_WINDOW:
             return NONE_COMBO
         return cand
 
@@ -236,7 +195,7 @@ class LevelTracker:
         # Settle detector. The mean RESTARTS on every excursion rather than a
         # counter merely resetting, so slow drift can never accumulate into a
         # false settle.
-        if self.cand_ticks > 0 and iabs(self.smooth - self.cand_mean) <= self.settle_tol:
+        if self.cand_ticks > 0 and iabs(self.smooth - self.cand_mean) <= SETTLE_TOL:
             self.cand_mean = slew_exact(self.cand_mean, self.smooth, 4)
             if self.cand_ticks < SETTLE_TICKS:
                 self.cand_ticks += 1
@@ -301,7 +260,17 @@ class FourVoltages:
         return self._rng
 
     def set_combo(self, combo):
-        self.target = float(self.levels[combo])
+        """Move to a combo's voltage.
+
+        Combos past the learned ten are still physically producible by the
+        module — that is the whole point of the match window — so the model has
+        to be able to emit them. They sit above the top learned level.
+        """
+        if combo < len(self.levels):
+            self.target = float(self.levels[combo])
+        else:
+            # Somewhere plausible but far from any learned centre.
+            self.target = float(self.levels[-1] + 220 * (combo - len(self.levels) + 1))
 
     def tick(self):
         d = self.target - self.value
@@ -315,27 +284,22 @@ class FourVoltages:
         return int(round(v))
 
 
-def spaced15(lo=-1500, hi=1500):
-    """Fifteen evenly spaced levels — the case where 15-mode is achievable.
-
-    Gap is (hi-lo)/14 = 214 units, comfortably over GAP_NEEDED_15.
-    """
-    return [lo + (hi - lo) * i // (MAX_LEVELS - 1) for i in range(MAX_LEVELS)]
+def spaced10(lo=-1500, hi=1500):
+    """Ten evenly spaced levels. Gap is (hi-lo)/9 = 333 units, comfortable."""
+    return [lo + (hi - lo) * i // (NUM_LEVELS - 1) for i in range(NUM_LEVELS)]
 
 
-def squashed15():
-    """A realistic bad case: the triples bunch up near the top, as they would on
-    a resistor network whose upper combinations crowd together. 15-mode must be
-    refused and 10-mode must still be clean."""
-    lv = spaced15()
-    lv[ABC] = lv[ABCD] - 30
-    lv[ABD] = lv[ABCD] - 60
+def squashed10():
+    """Two levels almost on top of each other, so the collision warning fires
+    and the player is told rather than left guessing."""
+    lv = spaced10()
+    lv[AC] = lv[AB] + 20
     return lv
 
 
-def degenerate15():
+def degenerate10():
     """Nothing patched in: every reading the same."""
-    return [7] * MAX_LEVELS
+    return [7] * NUM_LEVELS
 
 
 def play(tracker, hw, gesture, hold_ticks=80):
@@ -356,15 +320,11 @@ def prime(tracker, hw, combo, ticks=120):
         tracker.step(hw.tick())
 
 
-def build(levels, force10=False):
+def build(levels):
     """A tracker calibrated on `levels`, primed and ready to play."""
     t = LevelTracker()
     res = t.analyse(levels)
     assert res == RESULT_OK, "test fixture failed to calibrate"
-    if force10:
-        t.mode, t.active = MODE_10, LEVELS_10
-        t._set_tolerances()
-        t._rebuild()
     return t
 
 
@@ -385,21 +345,24 @@ def check(name, got, want):
 
 def test_vocabulary():
     print("vocabulary")
-    check("learn order covers 0..14", sorted(LEARN_ORDER), list(range(15)))
-    # The whole fallback story rests on this: the first ten indices, and the
-    # order they are learned in, ARE NIBBLE's.
-    check("first ten of learn order == NIBBLE's",
-          LEARN_ORDER[:10], NIBBLE_LEARN_ORDER)
+    check("learn order covers 0..9", sorted(LEARN_ORDER), list(range(10)))
+    check("the learn order IS NIBBLE's", LEARN_ORDER, NIBBLE_LEARN_ORDER)
     check("10-set is singles+pairs",
           [bin(COMBO_MASK[i]).count("1") for i in range(10)],
           [1, 1, 1, 1, 2, 2, 2, 2, 2, 2])
-    check("masks are the 15 non-empty subsets",
+    check("the mask table still describes all 15 subsets",
           sorted(COMBO_MASK), list(range(1, 16)))
+    # Only the first ten are PLAYED. The rest stay in the table because the
+    # match window has to reject them by distance, and because caltable.py
+    # documents which fingerings do nothing.
+    check("the ten played combos are singles and pairs",
+          [bin(COMBO_MASK[i]).count("1") for i in range(NUM_LEVELS)],
+          [1, 1, 1, 1, 2, 2, 2, 2, 2, 2])
 
 
 def test_releases_are_notes():
     print("releases are notes (no ghost rule)")
-    lv = spaced15()
+    lv = spaced10()
 
     t = build(lv)
     hw = FourVoltages(lv)
@@ -414,24 +377,13 @@ def test_releases_are_notes():
 
     t = build(lv)
     hw = FourVoltages(lv)
-    prime(t, hw, ABC)
-    check("ABC -> AB -> A", play(t, hw, [ABC, AB, A]), ["AB", "A"])
-
-    t = build(lv)
-    hw = FourVoltages(lv)
-    prime(t, hw, ABCD)
-    check("ABCD -> ABC -> AB -> A",
-          play(t, hw, [ABCD, ABC, AB, A]), ["ABC", "AB", "A"])
-
-    t = build(lv)
-    hw = FourVoltages(lv)
-    prime(t, hw, A)
-    check("A -> ABC (skips AB)", play(t, hw, [A, ABC]), ["ABC"])
+    prime(t, hw, AB)
+    check("AB -> CD -> AB", play(t, hw, [AB, CD, AB]), ["CD", "AB"])
 
 
 def test_trill():
     print("the trill — the defining gesture")
-    lv = spaced15()
+    lv = spaced10()
     t = build(lv)
     hw = FourVoltages(lv)
     prime(t, hw, C)
@@ -448,7 +400,7 @@ def test_trill_rate():
     the edge actually is rather than asserting a number we would like.
     """
     print("trill rate sweep")
-    lv = spaced15()
+    lv = spaced10()
     results = {}
     for hz in (4, 8, 12, 16, 20, 25, 30):
         half = max(1, int(CTRL_RATE / (2 * hz)))    # ticks per half-cycle
@@ -488,22 +440,28 @@ def test_trill_rate():
           results[30], 0)
 
 
-def test_unrecognised_stays_latched():
-    print("unrecognised values stay latched (10-mode)")
-    lv = spaced15()
-    t = build(lv, force10=True)
+def test_triples_are_safely_ignored():
+    """Pressing three fingers must do NOTHING, not something wrong.
+
+    Only ten combinations are learned, but the player can still physically
+    press a triple. Its voltage lands far from every learned centre, so the
+    match window rejects it and the current note simply stays. That rejection
+    is the whole reason the extra five combos can be dropped safely.
+    """
+    print("triples are ignored, not misread")
+    lv = spaced10()
+    t = build(lv)
     hw = FourVoltages(lv)
     prime(t, hw, A)
-    # ABC is not in the 10-set and sits far from any learned centre, so it is
-    # rejected and A keeps sounding. This is what makes 10-mode safe.
-    check("10-mode: A -> ABC is silent", play(t, hw, [A, ABC]), [])
-    check("10-mode: A -> ABC -> B still fires B",
-          play(t, hw, [ABC, B]), ["B"])
+    check("A -> ABC is silent", play(t, hw, [A, ABC]), [])
+    check("...and the note is still A", NAMES[t.current], "A")
+    check("A -> ABCD is silent", play(t, hw, [ABCD]), [])
+    check("...then B still fires normally", play(t, hw, [B]), ["B"])
 
 
 def test_boot_blip():
     print("boot blip")
-    lv = spaced15()
+    lv = spaced10()
     t = build(lv)
     hw = FourVoltages(lv)
     # Four Voltages powers up sitting at whatever was last pressed. The first
@@ -518,52 +476,42 @@ def test_boot_blip():
     check("but the next press fires", play(t, hw, [A]), ["A"])
 
 
-def test_mode_decision():
-    print("mode decision")
+def test_calibration_accepts_or_refuses():
+    print("calibration")
     t = LevelTracker()
-    check("even 15-spread -> 15-mode",
-          (t.analyse(spaced15()), t.mode), (RESULT_OK, MODE_15))
+    check("a clean spread installs", t.analyse(spaced10()), RESULT_OK)
+    check("...and reports its tightest gap", t.min_gap > 300, True)
 
     t = LevelTracker()
-    r = t.analyse(squashed15())
-    check("squashed triples -> falls back to 10", (r, t.mode), (RESULT_OK, MODE_10))
-    check("...and reports how close 15 got", t.min_gap_15 < GAP_NEEDED_15, True)
+    check("a squashed spread still installs", t.analyse(squashed10()), RESULT_OK)
+    check("...but warns about the collision", t.collisions > 0, True)
 
     t = LevelTracker()
-    check("nothing patched -> FAILED (not 10-mode)",
-          t.analyse(degenerate15()), RESULT_FAILED)
+    check("nothing patched -> FAILED", t.analyse(degenerate10()), RESULT_FAILED)
     check("...and nothing was installed", t.learned, False)
 
 
 def test_round_trip():
     print("learn round-trip")
-    lv = spaced15()
+    lv = spaced10()
 
     t = build(lv)
-    bad = [NAMES[i] for i in range(MAX_LEVELS) if t.match(lv[i], NONE_COMBO) != i]
-    check("all 15 captures re-classify to themselves", bad, [])
-
-    t = build(lv, force10=True)
-    bad = [NAMES[i] for i in range(LEVELS_10) if t.match(lv[i], NONE_COMBO) != i]
+    bad = [NAMES[i] for i in range(NUM_LEVELS) if t.match(lv[i], NONE_COMBO) != i]
     check("all 10 captures re-classify to themselves", bad, [])
 
 
-def test_fallback_is_nibble():
-    """10-mode must behave exactly as NIBBLE's proven detector does.
+def test_matches_nibble():
+    """The detector must behave exactly as NIBBLE's proven one does.
 
-    Not a re-implementation to compare against — the point is that the SAME
-    code with active=10 reproduces NIBBLE's level-detection behaviour: settle,
-    Schmitt, match-window rejection, primed. If this drifts, the proven
-    fallback is gone and there is nothing left to trust.
+    Settle, Schmitt, match-window rejection, primed. These are the one part of
+    this card's detection with real hardware history behind them, so a drift
+    here loses the only thing that was ever proven.
     """
-    print("10-mode fidelity")
-    lv = spaced15()
-    t = build(lv, force10=True)
-
-    check("only the ten are reachable",
-          all(t.match(lv[i], NONE_COMBO) < LEVELS_10 or
-              t.match(lv[i], NONE_COMBO) == NONE_COMBO
-              for i in range(MAX_LEVELS)), True)
+    print("detector fidelity")
+    lv = spaced10()
+    t = build(lv)
+    check("every learned level maps to itself",
+          all(t.match(lv[i], NONE_COMBO) == i for i in range(NUM_LEVELS)), True)
 
     # Schmitt hysteresis needs a fixture where two levels are close enough that
     # a single reading falls inside BOTH match windows — otherwise the window
@@ -573,18 +521,16 @@ def test_fallback_is_nibble():
     # combos the resistor network happened to place near each other, where
     # dither would otherwise flicker between them. Levels 150 apart (~440mV)
     # are comfortably legal and give overlapping windows.
-    tight = [-1500 + 150 * i for i in range(LEVELS_10)] + [0] * 5
+    tight = [-1500 + 150 * i for i in range(NUM_LEVELS)]
     tt = LevelTracker()
     tt.level = list(tight)
-    tt.active, tt.mode = LEVELS_10, MODE_10
-    tt._set_tolerances()
     tt._rebuild()
 
     k = 4
     thr = tt.thresh[k]
     lo_combo, hi_combo = tt.sorted_[k], tt.sorted_[k + 1]
     probe = thr + 1                      # just inside the HIGHER slot
-    assert iabs(probe - tt.level[lo_combo]) <= MATCH_WINDOW_10, \
+    assert iabs(probe - tt.level[lo_combo]) <= MATCH_WINDOW, \
         "fixture: probe outside the match window, test would be vacuous"
     check("hysteresis holds the level we came from",
           tt.match(probe, lo_combo), lo_combo)
@@ -593,18 +539,17 @@ def test_fallback_is_nibble():
     check("...and a big jump ignores hysteresis entirely",
           tt.match(tight[hi_combo] + 1, lo_combo) != lo_combo, True)
 
-    # Match window: a value between two learned levels but far from both is
-    # rejected rather than snapped.
-    mid = (lv[ABC] + lv[ABCD]) // 2
-    if min(iabs(mid - lv[i]) for i in range(LEVELS_10)) > MATCH_WINDOW_10:
-        check("a far-from-anything value is rejected",
-              t.match(mid, NONE_COMBO), NONE_COMBO)
+    # Match window: a value far from every learned level is rejected rather
+    # than snapped to the nearest. This is what makes a triple harmless.
+    far = lv[-1] + 400
+    check("a far-from-anything value is rejected",
+          t.match(far, NONE_COMBO), NONE_COMBO)
 
 
 def test_noise_immunity():
     """A still finger must not produce notes, however long you wait."""
     print("noise immunity")
-    lv = spaced15()
+    lv = spaced10()
     t = build(lv)
     hw = FourVoltages(lv, noise=6)
     prime(t, hw, BC)
@@ -622,11 +567,11 @@ def main():
     test_releases_are_notes()
     test_trill()
     test_trill_rate()
-    test_unrecognised_stays_latched()
+    test_triples_are_safely_ignored()
     test_boot_blip()
-    test_mode_decision()
+    test_calibration_accepts_or_refuses()
     test_round_trip()
-    test_fallback_is_nibble()
+    test_matches_nibble()
     test_noise_immunity()
 
     print()

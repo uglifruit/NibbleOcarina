@@ -122,6 +122,26 @@ Nothing feeds back into the nonlinearity, so it can only colour a pitch that is
 already exact. **If you are tempted to reintroduce a feedback path for
 authenticity, read the devlog first.**
 
+**Ten combinations, not fifteen.** The card used to walk all fifteen and decide
+at the end whether the voltages separated well enough to use them all. Hardware
+said fifteen was simply too many to play. The triples and the quad are still
+SAFE — they land far from any learned level and the match window rejects them,
+so pressing one leaves the current note alone. `tools/levelsim.py` asserts that
+directly, because it is what makes dropping them safe rather than merely
+convenient.
+
+**Cents are carried in Q4 (sixteenths) everywhere.** Whole cents quantise small
+vibrato depths to ZERO, so vibrato did nothing until it reached two cents and
+then arrived abruptly — reported from hardware as an audible step, and notably
+absent in portamento mode because a glide keeps the cents term non-zero. If you
+add another modulation source, it is Q4 too.
+
+**Loudness is logarithmic and the level curve has to fight that.** A curve that
+looks fast in amplitude is not fast to the ear: the cubic that preceded the
+current fifth power reached 84% of full amplitude by half travel and was still
+only -12dB — half as loud — at a quarter. Judge this curve in dB, never in
+linear level.
+
 **There is no air path.** v2 mixed filtered noise under the tone as "breath";
 hardware said it added nothing, and it was right. The tone is a pure sine and
 the expression is VIBRATO. Do not reintroduce noise without listening first —

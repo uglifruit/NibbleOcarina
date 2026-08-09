@@ -139,25 +139,34 @@ private:
 // wavefolder on Audio Out 2, so the CW end is slower-vibrato, slightly louder
 // and more harmonically complex all at once.
 
-/// Vibrato anchors. Rate in Q8 Hz, depth in cents.
-constexpr int32_t kVibRateFastQ8 = 8 * 256;
-constexpr int32_t kVibRateSlowQ8 = 3 * 256;
-constexpr int32_t kVibDepthWide  = 50;
-constexpr int32_t kVibDepthTight = 10;
+/// Vibrato anchors. Rate in Q8 Hz, depth in Q4 CENTS (sixteenths).
+///
+/// Depth is Q4 for the same reason the pitch path is: at small depths, whole
+/// cents round the entire modulation to zero, so vibrato appeared as a step
+/// rather than a fade. 50 cents is 800 in Q4.
+constexpr int32_t kVibRateFastQ8   = 8 * 256;
+constexpr int32_t kVibRateSlowQ8   = 3 * 256;
+constexpr int32_t kVibDepthWideQ4  = 50 * 16;
+constexpr int32_t kVibDepthTightQ4 = 10 * 16;
 
 /// Where in Main's travel vibrato starts appearing, Q12.
 ///
-/// Deliberately above where the level curve has flattened: the two stages should
-/// not overlap, or turning the knob up in the lower half would both raise the
-/// volume and start a wobble, and neither would read clearly.
-constexpr int32_t kVibOnset = 2000;
+/// 1200 of 4095, so vibrato begins around a quarter of the way up and has three
+/// quarters of the travel to grow in. It was 2000 (halfway), which left the
+/// expression crammed into the top half — reported from hardware as wanting the
+/// vibrato "much earlier in the Main knob".
+///
+/// It still sits above where the level curve has essentially arrived, so the
+/// two stages remain legible: turn the bottom of the knob and it gets louder,
+/// turn the rest and it sings.
+constexpr int32_t kVibOnset = 1200;
 
 /// How much extra level X adds across its sweep, Q12. Small — a tilt, not a
 /// second volume control.
 constexpr int32_t kXVolumeTilt = 700;
 
-/// Vibrato rate and depth for a given Main/X position.
-struct Vibrato { int32_t rateQ8, cents; };
+/// Vibrato rate (Q8 Hz) and depth (Q4 cents) for a given Main/X position.
+struct Vibrato { int32_t rateQ8, centsQ4; };
 Vibrato VibratoFor(int32_t mainQ12, int32_t xKnob);
 
 /// The level X adds on top of Main's own curve, Q12.
