@@ -91,15 +91,20 @@ constexpr uint8_t kReleaseShiftMax = 10;
 /// rather than fades. Reported from hardware twice, the second time as "I am
 /// still hearing notes finish".
 ///
-/// Real instruments do the opposite: the decay slows as the note dies, so the
-/// last of the tail lingers. Below these two levels the shift grows by one and
-/// then two, which stretches the quiet end without touching the loud one.
-///
-/// Measured on a full-level note: the rate falls from -10.2dB/200ms at the
-/// start to -1.2dB/200ms at the end, and the whole release runs 3.1s instead
-/// of 1.5s. A quiet note runs 950ms.
-constexpr int32_t kEaseLevel1 = 256;   ///< below this, one shift slower
-constexpr int32_t kEaseLevel2 = 32;    ///< below this, two
+/// Below kEaseLevel1 the release stops being exponential in `env_` at all and
+/// becomes a LINEAR ramp in the audible output (LevelQ12()) down to zero over
+/// kEaseTailTicks. This second attempt replaced a first one that slowed the
+/// exponential further (a bigger shift) instead of changing its shape — that
+/// looked right in the accumulator but was invisible at the ear, because
+/// LevelQ12() is env_ >> kEnvFrac and a slowed-further exponential's per-tick
+/// step becomes SMALLER than one count of that shifted-down output. The
+/// result was silent to the ear: the last ~19 audible levels each held dead
+/// flat for 43-85ms and then the last one, level 1, snapped straight to zero
+/// — a plateau followed by a cliff, which is exactly "stopping", not fading.
+/// A linear ramp guarantees every one of the last few audible steps is the
+/// same size and the final step is no bigger than the others.
+constexpr int32_t kEaseLevel1 = 32;      ///< below this, switch to a linear ramp
+constexpr int32_t kEaseTailTicks = 96;   ///< ticks to cross kEaseLevel1 -> 0, ~32ms
 
 /// Where the envelope is considered finished and is snapped to zero.
 ///
@@ -223,6 +228,13 @@ private:
 	bool     gate_    = false;
 	bool     struck_  = false;
 	uint8_t  attack_  = kAttackShiftFast;
+
+	/// State of the final linear ramp. tailStep_ is 0 when not in the ramp;
+	/// both are set ONCE, the tick the envelope first drops below
+	/// kEaseLevel1, from the level at that instant — never recomputed against
+	/// the shrinking remainder, or it would just be another exponential.
+	int32_t  tailStep_      = 0;   ///< env_ units subtracted per tick, fixed
+	int32_t  tailTicksLeft_ = 0;
 
 	int32_t  vibCents_    = 0;
 	int32_t  vibRateQ8_   = 0;

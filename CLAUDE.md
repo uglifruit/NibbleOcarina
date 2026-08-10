@@ -130,14 +130,27 @@ render, anything below just holds the gate high in silence.
 
 **A one-pole release is a straight line in dB, and that reads as "stopping"
 not "fading."** Fixing the floor (above) was not enough — the decay still
-sounded like it finished rather than eased away, because a constant shift is a
-constant rate of loss per tick regardless of level. Real decays slow down as
-they die. `Breath::Tick()` now adds to the release shift as `LevelQ12()` drops
-below `kEaseLevel1` (256) and again below `kEaseLevel2` (32), so the tail's
-last stretch decays at a fraction of its starting rate. `breathsim.py`'s
-`test_the_tail_eases_off()` asserts the late-stage dB/200ms rate is under half
-the early-stage rate — don't let a future release-shift change flatten that
-back into a straight line without tripping it.
+sounded like it finished rather than eased away.
+
+**Slowing an exponential's shift near zero does not make it audible — it
+makes it invisible.** The first attempt at the above added extra shift below
+two low thresholds, verified by a model that measured `env_`'s dB-per-200ms
+rate and saw it fall. But `LevelQ12()` is `env_ >> kEnvFrac`, a 12-bit
+integer, and an exponential's step is a fraction of the *remaining* value —
+so slowing the shift only postpones the point where that step rounds to under
+one output count, it does not prevent it. Traced sample-by-sample: the last
+nineteen audible levels each held dead flat for 43–85ms and then the last one
+dropped straight to zero. A held plateau then a cliff is not a fade, and the
+model's 200ms-wide dB windows were coarse enough to average the plateau away
+without ever seeing it — a lesson in measuring the accumulator instead of the
+loudspeaker. **Fix:** below `kEaseLevel1` (32) the release stops being
+exponential and becomes a **linear** ramp, `kEaseTailTicks` (96, ≈32ms) long,
+with the step size fixed once on entry from the level at that instant — never
+recomputed against the shrinking remainder, or it reconstructs the same bug
+one level down. `breathsim.py`'s `test_the_tail_eases_off()` walks the tail
+sample-by-sample and asserts no held level lasts more than ~40ms near the end
+and the last few counts step down by exactly one each — not a dB-rate average,
+because that is what let the plateau through the first time.
 
 **The oscillator's phase is parked at zero while silent.** Letting it free-run
 puts a step of up to full scale on the first sample of every attack — measured

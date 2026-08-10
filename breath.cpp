@@ -13,6 +13,7 @@ void Breath::Init()
 	peak_ = effort_ = env_ = 0;
 	gate_ = struck_ = false;
 	attack_ = kAttackShiftFast;
+	tailStep_ = tailTicksLeft_ = 0;
 	vibCents_ = vibRateQ8_ = vibCentsMax_ = 0;
 	vibPhase_ = 0;
 }
@@ -124,6 +125,7 @@ void Breath::Tick()
 			if (step == 0) step = 1;      // never stall short of the target
 			env_ += step;
 			if (env_ > target) env_ = target;
+			tailTicksLeft_ = 0;   // a fresh climb cancels any leftover tail
 		}
 		else if (env_ > target)
 		{
@@ -134,36 +136,56 @@ void Breath::Tick()
 			if (step == 0) step = 1;
 			env_ -= step;
 			if (env_ < target) env_ = target;
+			tailTicksLeft_ = 0;
 		}
 	}
 	else if (env_ > 0)
 	{
-		// RELEASE, and its rate comes from the note's own peak rather than
-		// from a knob: loud notes ring on, quiet ones are short. That coupling
-		// is what makes one knob feel like dynamics.
-		uint8_t rel = static_cast<uint8_t>(
-			kReleaseShiftMin +
-			(((kReleaseShiftMax - kReleaseShiftMin) * peak_) >> 12));
-
-		// AND IT EASES OFF as the note dies — see kEaseLevel1.
-		//
-		// A constant-rate exponential is a straight line in dB and has no
-		// ending; it just gets quieter at the same speed until the arithmetic
-		// runs out, which is heard as a note that stops rather than fades.
-		// Slowing the decay at the quiet end makes the last of the tail linger,
-		// which is what a real instrument does.
 		const int32_t lvl = env_ >> kEnvFrac;
-		if (lvl <= kEaseLevel2)      rel += 2;
-		else if (lvl <= kEaseLevel1) rel += 1;
 
-		int32_t step = env_ >> rel;
-		if (step == 0) step = 1;
-		env_ -= step;
-
-		// Snap the tail to silence at the point it stops being audible — see
-		// kEnvFloor. Cutting any higher chops the end off every note; cutting
-		// lower just holds the gate high while nothing sounds.
-		if (env_ < (kEnvFloor << kEnvFrac)) env_ = 0;
+		if (tailTicksLeft_ > 0 || lvl <= kEaseLevel1)
+		{
+			// THE FINAL RAMP — linear, not exponential, and sized in ticks
+			// rather than in a shift.
+			//
+			// An exponential's per-tick step is a fraction of the REMAINING
+			// value, so once the remainder is only a few LevelQ12() counts the
+			// step rounds to less than one count and the audible output holds
+			// perfectly flat for many ticks before finally snapping to zero —
+			// a plateau then a cliff, which reads as stopping rather than
+			// fading. See kEaseLevel1's comment.
+			//
+			// tailStep_ is computed ONCE, on entry, from the level at that
+			// instant, and held fixed for the whole ramp. Recomputing it every
+			// tick against env_'s shrinking value would just be a second,
+			// slower exponential with the same flat-then-cliff shape.
+			if (tailTicksLeft_ == 0)
+			{
+				tailStep_ = (lvl << kEnvFrac) / kEaseTailTicks;
+				if (tailStep_ == 0) tailStep_ = 1;
+				tailTicksLeft_ = kEaseTailTicks;
+			}
+			env_ -= tailStep_;
+			if (--tailTicksLeft_ <= 0 || env_ < (kEnvFloor << kEnvFrac))
+			{
+				env_ = 0;
+				tailTicksLeft_ = 0;
+			}
+		}
+		else
+		{
+			// RELEASE proper: its rate comes from the note's own peak rather
+			// than from a knob — loud notes ring on, quiet ones are short.
+			// That coupling is what makes one knob feel like dynamics. This
+			// runs exponentially down to kEaseLevel1, where the ramp above
+			// takes over for a shaped, audible ending.
+			const uint8_t rel = static_cast<uint8_t>(
+				kReleaseShiftMin +
+				(((kReleaseShiftMax - kReleaseShiftMin) * peak_) >> 12));
+			int32_t step = env_ >> rel;
+			if (step == 0) step = 1;
+			env_ -= step;
+		}
 	}
 
 	// --- vibrato ---------------------------------------------------------

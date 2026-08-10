@@ -30,8 +30,8 @@ ATTACK_SHIFT_SLOW = 11
 RELEASE_SHIFT_MIN = 6
 RELEASE_SHIFT_MAX = 10
 ENV_FLOOR = 1
-EASE_LEVEL_1 = 256
-EASE_LEVEL_2 = 32
+EASE_LEVEL_1 = 32
+EASE_TAIL_TICKS = 96
 ENV_FRAC = 8
 
 VIB_HZ_TO_INC_Q16 = 366503876
@@ -76,6 +76,8 @@ class Breath:
         self.vib_rate_q8 = 0
         self.vib_cents_max = 0
         self.vib_phase = 0
+        self.tail_step = 0
+        self.tail_ticks_left = 0
 
     # -- inputs --------------------------------------------------------------
 
@@ -129,28 +131,48 @@ class Breath:
                 if step == 0:
                     step = 1
                 self.env = min(target, self.env + step)
+                self.tail_ticks_left = 0
             elif self.env > target:
                 d = self.env - target
                 step = d >> self.attack
                 if step == 0:
                     step = 1
                 self.env = max(target, self.env - step)
+                self.tail_ticks_left = 0
         elif self.env > 0:
-            rel = RELEASE_SHIFT_MIN + (
-                ((RELEASE_SHIFT_MAX - RELEASE_SHIFT_MIN) * self.peak) >> 12)
-            # The release EASES OFF as the note dies, so the tail lingers
-            # instead of marching to zero at a constant rate. See breath.cpp.
             lvl = self.env >> ENV_FRAC
-            if lvl <= EASE_LEVEL_2:
-                rel += 2
-            elif lvl <= EASE_LEVEL_1:
-                rel += 1
-            step = self.env >> rel
-            if step == 0:
-                step = 1
-            self.env -= step
-            if self.env < (ENV_FLOOR << ENV_FRAC):
-                self.env = 0
+
+            if self.tail_ticks_left > 0 or lvl <= EASE_LEVEL_1:
+                # THE FINAL RAMP -- linear, not exponential. An exponential's
+                # step is a fraction of the remainder, so once the remainder
+                # is only a few LevelQ12() counts the step rounds to less than
+                # one count and the audible output holds flat for many ticks
+                # before snapping to zero -- a plateau then a cliff. A linear
+                # ramp's step is fixed ONCE, on entry, from the level at that
+                # instant, and held for the whole ramp -- recomputing it every
+                # tick against the shrinking env would just be a second,
+                # slower exponential with the same flat-then-cliff shape. See
+                # breath.cpp.
+                if self.tail_ticks_left == 0:
+                    self.tail_step = (lvl << ENV_FRAC) // EASE_TAIL_TICKS
+                    if self.tail_step == 0:
+                        self.tail_step = 1
+                    self.tail_ticks_left = EASE_TAIL_TICKS
+                self.env -= self.tail_step
+                self.tail_ticks_left -= 1
+                if self.tail_ticks_left <= 0 or self.env < (ENV_FLOOR << ENV_FRAC):
+                    self.env = 0
+                    self.tail_ticks_left = 0
+            else:
+                # RELEASE proper, down to EASE_LEVEL_1 where the ramp above
+                # takes over. Rate comes from the note's own peak -- loud
+                # notes ring on, quiet ones are short.
+                rel = RELEASE_SHIFT_MIN + (
+                    ((RELEASE_SHIFT_MAX - RELEASE_SHIFT_MIN) * self.peak) >> 12)
+                step = self.env >> rel
+                if step == 0:
+                    step = 1
+                self.env -= step
 
         if self.vib_cents_max > 0 and self.env > 0:
             inc = (self.vib_rate_q8 * VIB_HZ_TO_INC_Q16) >> 16
@@ -208,24 +230,33 @@ def test_silence():
     check("the last audible level before silence is 1", last, 1)
 
     # And it must LINGER there rather than leaping from loud to nothing: the
-    # final few dB should take a sensible number of ticks.
+    # final linear ramp (see EASE_TAIL_TICKS) is deliberately short and even,
+    # not slow, but it must still take more than a couple of ticks -- a
+    # one-tick drop from audible to silent is the exact cliff this was fixed
+    # to remove.
     quiet_from = next(i for i in range(300, tail) if out[i] <= 4)
     check_true("the last few dB take real time",
-               ms(tail - quiet_from) > 5,
+               ms(tail - quiet_from) > 2,
                f"{ms(tail-quiet_from):.0f}ms below level 4")
 
 
 def test_the_tail_eases_off():
-    """The decay must SLOW as the note dies.
+    """The last stretch of the tail must actually FADE, not plateau-then-cliff.
 
-    A constant-rate exponential is a straight line in dB and has no ending --
-    it just gets quieter at the same speed until the arithmetic runs out. That
-    is heard as a note that FINISHES rather than fades, and it was reported
-    from hardware twice: "the decay to silence is always too abrupt", then "I
-    am still hearing notes finish".
+    Reported from hardware twice: "the decay to silence is always too abrupt",
+    then, after the exponential's shift was slowed further at low levels,
+    "I am still hearing notes finish". The second report was because slowing
+    an EXPONENTIAL'S shift only changes env_, the internal accumulator --
+    LevelQ12() is env_ >> ENV_FRAC, and once the exponential's remaining step
+    is smaller than one count of that shifted-down output, the audible level
+    holds perfectly flat for many ticks and then snaps straight to zero. A
+    slow-then-sudden staircase, not a fade.
 
-    Real instruments slow down as they die. This asserts the rate at the end of
-    the tail is well under the rate at the start.
+    So the fix is not "slower still" but a change of SHAPE: below
+    EASE_LEVEL_1 the tail is linear, not exponential, sized in ticks rather
+    than as a fraction of the remainder. This asserts there is no long flat
+    plateau on any of the last few audible counts, and that the final drop to
+    silence is no bigger than the steps before it.
     """
     print("the tail eases off")
     b = Breath()
@@ -233,20 +264,31 @@ def test_the_tail_eases_off():
     b.set_attack(0)
     out = play(b, 600, 200000)
     end = next(i for i in range(600, len(out)) if out[i] == 0)
-
-    def db_at(t_ms):
-        i = 600 + int(t_ms * CTRL_RATE / 1000)
-        v = out[i] if i < end else 0
-        return 20 * math.log10(v / 4095) if v else -99.0
-
     total = ms(end - 600)
-    early = db_at(0) - db_at(200)
-    late = db_at(total * 0.7) - db_at(total * 0.7 + 200)
-    print(f"        total {total:.0f}ms, "
-          f"first 200ms {early:.1f}dB, late 200ms {late:.1f}dB")
-    check_true("the decay slows toward the end", late < early / 2,
-               f"{early:.1f}dB -> {late:.1f}dB per 200ms")
-    check_true("and the whole tail is musically long", total > 2000,
+
+    # Walk the tail and find how long each distinct audible level is held.
+    holds = []
+    run_start = 600
+    prev = out[600]
+    for i in range(601, end + 1):
+        v = out[i] if i <= end else 0
+        if v != prev:
+            holds.append((prev, i - run_start))
+            run_start = i
+            prev = v
+
+    last_ten = holds[-10:]
+    worst_hold_ms = max(ms(t) for _, t in last_ten)
+    print(f"        total {total:.0f}ms, longest hold in the last "
+          f"10 steps: {worst_hold_ms:.0f}ms")
+    check_true("no long flat plateau near the end", worst_hold_ms < 40,
+               f"{worst_hold_ms:.0f}ms")
+
+    check("the last audible level steps down by exactly 1 each time",
+          [lvl for lvl, _ in last_ten[-5:]],
+          list(range(last_ten[-5][0], last_ten[-5][0] - 5, -1)))
+
+    check_true("and the whole tail is musically long", total > 500,
                f"{total:.0f}ms")
 
 

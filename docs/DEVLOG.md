@@ -5,6 +5,62 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v4.0.3 — the "easing" in v4.0.2 was invisible at the ear
+
+> "still VERY AUDIBLY stopping. I'm not hearing that decay to silence."
+
+v4.0.2 slowed the release's exponential shift further below two thresholds,
+verified in the model by measuring the dB-per-200ms rate near the start and
+end of the tail — and that measurement genuinely showed the rate falling.
+The model was telling the truth about `env_`, the internal accumulator, and
+lying about what a player would hear.
+
+`LevelQ12()` — what the VCA actually multiplies by — is `env_ >> kEnvFrac`, a
+12-bit integer. An exponential's per-tick step is a fraction of the
+**remaining value**, so slowing the shift further only postpones the point
+where that step rounds to less than one `LevelQ12()` count; it does not
+prevent it. Traced sample-by-sample: below the second threshold the last
+nineteen audible output levels each held **dead flat for 43–85ms**, and then
+the very last one — level 1 — dropped straight to 0. A staircase with a long
+flat tread and then a cliff is not a fade by any measure that matters; it is
+closer to what was reported the first time, just with more silence smuggled
+in front of it. `test_the_tail_eases_off()` passed because it only ever
+looked at `env_` through 200ms dB windows wide enough to average the plateau
+away — a test measuring the accumulator, not the loudspeaker.
+
+### The fix is a change of shape, not a slower slope
+
+Below `kEaseLevel1` (32, replacing the old two-threshold `kEaseLevel1`/
+`kEaseLevel2` pair) the release stops being exponential in `env_` altogether
+and switches to a **linear ramp**, sized in ticks
+(`kEaseTailTicks = 96`, ≈32ms) rather than as a fraction of the remainder.
+The step size is computed **once**, at the instant the ramp is entered, from
+the level at that instant, and held fixed for the whole ramp — recomputing
+it every tick against the shrinking value would just reconstruct the same
+bug one level lower down.
+
+That guarantees every one of the last audible counts gets equal, bounded
+time and the final step to silence is never bigger than the ones before it.
+Traced on a full-peak note: level 32 down to 0, one count every ~3 ticks
+(1ms), perfectly even, no plateau.
+
+Total release time for a full-peak note dropped to 859ms (from the un-eased
+v4.0.1 baseline's ~1.5s, and from v4.0.2's inflated-but-inaudible ~3.06s) —
+shorter than either prior version, because it is no longer paying for a tail
+that sounded identical to a shorter one. `kReleaseShiftMax` was not touched;
+if the overall release still feels too short once this is heard on hardware,
+that is the knob to raise next, now that the ending itself is no longer the
+problem.
+
+**The lesson: a model result is only as honest as what it's allowed to
+measure.** `test_the_tail_eases_off()` was rewritten to walk the tail
+sample-by-sample and assert directly on the thing that matters — no held
+level lasting more than ~40ms near the end, and the last five audible counts
+each exactly one apart — rather than trusting a coarse dB-rate average to
+notice a staircase hiding underneath it.
+
+---
+
 ## v4.0.2 — a straight line in dB still sounds like it stops
 
 > "I am still hearing notes finish. can the Main/X knob have some that decay to
