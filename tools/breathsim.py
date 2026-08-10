@@ -30,6 +30,8 @@ ATTACK_SHIFT_SLOW = 11
 RELEASE_SHIFT_MIN = 6
 RELEASE_SHIFT_MAX = 10
 ENV_FLOOR = 1
+EASE_LEVEL_1 = 256
+EASE_LEVEL_2 = 32
 ENV_FRAC = 8
 
 VIB_HZ_TO_INC_Q16 = 366503876
@@ -136,6 +138,13 @@ class Breath:
         elif self.env > 0:
             rel = RELEASE_SHIFT_MIN + (
                 ((RELEASE_SHIFT_MAX - RELEASE_SHIFT_MIN) * self.peak) >> 12)
+            # The release EASES OFF as the note dies, so the tail lingers
+            # instead of marching to zero at a constant rate. See breath.cpp.
+            lvl = self.env >> ENV_FRAC
+            if lvl <= EASE_LEVEL_2:
+                rel += 2
+            elif lvl <= EASE_LEVEL_1:
+                rel += 1
             step = self.env >> rel
             if step == 0:
                 step = 1
@@ -204,6 +213,41 @@ def test_silence():
     check_true("the last few dB take real time",
                ms(tail - quiet_from) > 5,
                f"{ms(tail-quiet_from):.0f}ms below level 4")
+
+
+def test_the_tail_eases_off():
+    """The decay must SLOW as the note dies.
+
+    A constant-rate exponential is a straight line in dB and has no ending --
+    it just gets quieter at the same speed until the arithmetic runs out. That
+    is heard as a note that FINISHES rather than fades, and it was reported
+    from hardware twice: "the decay to silence is always too abrupt", then "I
+    am still hearing notes finish".
+
+    Real instruments slow down as they die. This asserts the rate at the end of
+    the tail is well under the rate at the start.
+    """
+    print("the tail eases off")
+    b = Breath()
+    b.set_knob(4095)
+    b.set_attack(0)
+    out = play(b, 600, 200000)
+    end = next(i for i in range(600, len(out)) if out[i] == 0)
+
+    def db_at(t_ms):
+        i = 600 + int(t_ms * CTRL_RATE / 1000)
+        v = out[i] if i < end else 0
+        return 20 * math.log10(v / 4095) if v else -99.0
+
+    total = ms(end - 600)
+    early = db_at(0) - db_at(200)
+    late = db_at(total * 0.7) - db_at(total * 0.7 + 200)
+    print(f"        total {total:.0f}ms, "
+          f"first 200ms {early:.1f}dB, late 200ms {late:.1f}dB")
+    check_true("the decay slows toward the end", late < early / 2,
+               f"{early:.1f}dB -> {late:.1f}dB per 200ms")
+    check_true("and the whole tail is musically long", total > 2000,
+               f"{total:.0f}ms")
 
 
 def test_a_tap_is_a_note():
@@ -385,6 +429,7 @@ def test_no_pitch_change_from_main():
 def main():
     print("breathsim — model of breath.cpp\n")
     test_silence()
+    test_the_tail_eases_off()
     test_a_tap_is_a_note()
     test_hold_sustains()
     test_swell()

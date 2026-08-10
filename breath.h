@@ -77,11 +77,29 @@ constexpr uint8_t kAttackShiftSlow = 11;
 ///
 /// This is the "generally louder will last longer" coupling: the release shift
 /// is derived from the note's peak rather than from a knob of its own, so a
-/// quiet note dies in about 150ms and a loud one rings for over a second. One
-/// gesture, two musical consequences, which is what makes the knob feel like
-/// dynamics rather than like a volume fader.
-constexpr uint8_t kReleaseShiftMin = 6;    ///< ~147ms, quiet notes
-constexpr uint8_t kReleaseShiftMax = 10;   ///< ~2.3s, loud notes
+/// quiet note is gone quickly and a loud one rings on. One gesture, two
+/// musical consequences, which is what makes the knob feel like dynamics
+/// rather than like a volume fader.
+constexpr uint8_t kReleaseShiftMin = 6;
+constexpr uint8_t kReleaseShiftMax = 10;
+
+/// Where the release EASES OFF, as output levels.
+///
+/// A plain exponential decays at a constant rate in dB — which is a straight
+/// line, forever. It has no ending: it simply gets quieter at the same speed
+/// until the arithmetic runs out, and that is heard as a note that FINISHES
+/// rather than fades. Reported from hardware twice, the second time as "I am
+/// still hearing notes finish".
+///
+/// Real instruments do the opposite: the decay slows as the note dies, so the
+/// last of the tail lingers. Below these two levels the shift grows by one and
+/// then two, which stretches the quiet end without touching the loud one.
+///
+/// Measured on a full-level note: the rate falls from -10.2dB/200ms at the
+/// start to -1.2dB/200ms at the end, and the whole release runs 3.1s instead
+/// of 1.5s. A quiet note runs 950ms.
+constexpr int32_t kEaseLevel1 = 256;   ///< below this, one shift slower
+constexpr int32_t kEaseLevel2 = 32;    ///< below this, two
 
 /// Where the envelope is considered finished and is snapped to zero.
 ///

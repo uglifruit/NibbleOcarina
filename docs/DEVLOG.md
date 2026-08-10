@@ -5,6 +5,46 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v4.0.2 — a straight line in dB still sounds like it stops
+
+> "I am still hearing notes finish. can the Main/X knob have some that decay to
+> silence nicer!"
+
+The floor fix in v4.0.1 let the last audible dB actually play, but the shape
+was still wrong. A one-pole release is a **constant rate in decibels** — a
+straight line on a dB-vs-time plot — and a straight line has no sense of
+"ending" until it crosses the floor and is simply gone. Real instruments don't
+decay like that: the rate itself slows as the sound dies, which is what a
+"fade" actually sounds like as opposed to a "stop."
+
+### Easing the tail
+
+`Breath::Tick()`'s release branch now increases the release shift — i.e.
+slows the decay rate — as the envelope crosses two lower thresholds, measured
+in the same units as `LevelQ12()`:
+
+- below `kEaseLevel1` (256 of 4095): one extra shift
+- below `kEaseLevel2` (32 of 4095): two extra shifts total
+
+So the note decays at its normal (peak-coupled) rate for most of its length,
+then eases twice on the way out. Measured on a full-peak note in
+`tools/breathsim.py`: the first 200ms drops 10.2dB, the last 200ms before
+silence drops only 1.7dB — a six-fold slowdown — and the total release
+stretched from ~1.5s to ~3.06s, all of it now audibly *tapering* rather than
+running at one rate until it's gone.
+
+`kEnvFloor` did not need to move again; it was already at the lowest
+representable step (see v4.0.1). This is purely a shape change on the way down
+to that floor.
+
+A new model test, `test_the_tail_eases_off()`, plays a full-peak note and
+asserts the late-stage dB/200ms rate is under half the early-stage rate, plus
+that the whole tail clears 2000ms — so a future change to the release
+constants can't silently flatten the taper back into a straight line without
+tripping a test.
+
+---
+
 ## v4.0.1 — the tail was being chopped, and every attack clicked
 
 > "the Decay to silence is always too abrupt (I can hear it cut off)"

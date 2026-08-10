@@ -128,6 +128,17 @@ and was clearly audible as the decay "cutting off". The last audible level is
 `1 << kEnvFrac`; anything above that removes tail the hardware could still
 render, anything below just holds the gate high in silence.
 
+**A one-pole release is a straight line in dB, and that reads as "stopping"
+not "fading."** Fixing the floor (above) was not enough — the decay still
+sounded like it finished rather than eased away, because a constant shift is a
+constant rate of loss per tick regardless of level. Real decays slow down as
+they die. `Breath::Tick()` now adds to the release shift as `LevelQ12()` drops
+below `kEaseLevel1` (256) and again below `kEaseLevel2` (32), so the tail's
+last stretch decays at a fraction of its starting rate. `breathsim.py`'s
+`test_the_tail_eases_off()` asserts the late-stage dB/200ms rate is under half
+the early-stage rate — don't let a future release-shift change flatten that
+back into a straight line without tripping it.
+
 **The oscillator's phase is parked at zero while silent.** Letting it free-run
 puts a step of up to full scale on the first sample of every attack — measured
 at 2671 counts against the ~200 a 220Hz sine moves per sample — and no envelope

@@ -141,9 +141,20 @@ void Breath::Tick()
 		// RELEASE, and its rate comes from the note's own peak rather than
 		// from a knob: loud notes ring on, quiet ones are short. That coupling
 		// is what makes one knob feel like dynamics.
-		const uint8_t rel = static_cast<uint8_t>(
+		uint8_t rel = static_cast<uint8_t>(
 			kReleaseShiftMin +
 			(((kReleaseShiftMax - kReleaseShiftMin) * peak_) >> 12));
+
+		// AND IT EASES OFF as the note dies — see kEaseLevel1.
+		//
+		// A constant-rate exponential is a straight line in dB and has no
+		// ending; it just gets quieter at the same speed until the arithmetic
+		// runs out, which is heard as a note that stops rather than fades.
+		// Slowing the decay at the quiet end makes the last of the tail linger,
+		// which is what a real instrument does.
+		const int32_t lvl = env_ >> kEnvFrac;
+		if (lvl <= kEaseLevel2)      rel += 2;
+		else if (lvl <= kEaseLevel1) rel += 1;
 
 		int32_t step = env_ >> rel;
 		if (step == 0) step = 1;

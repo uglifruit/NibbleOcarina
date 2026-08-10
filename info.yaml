@@ -3,7 +3,7 @@ Name: NIBBLE OCARINA
 short-description: Turns the Workshop System's four buttons into the finger holes of a bowed flute you play with a switch
 Language: C++ (ComputerCard)
 Creator: Andy Jenkinson (uglifruit)
-Version: "4.0.1"
+Version: "4.0.2"
 Status: Released
 License: CC-BY-4.0
 repository: https://github.com/uglifruit/NibbleOcarina
@@ -17,7 +17,7 @@ contact:
 
 uf2:
   - path: UF2/ocarina.uf2
-    name: NIBBLE OCARINA 4.0.1
+    name: NIBBLE OCARINA 4.0.2
 
 tags:
   - flute
