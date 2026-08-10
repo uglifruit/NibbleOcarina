@@ -83,12 +83,24 @@ constexpr uint8_t kAttackShiftSlow = 11;
 constexpr uint8_t kReleaseShiftMin = 6;    ///< ~147ms, quiet notes
 constexpr uint8_t kReleaseShiftMax = 10;   ///< ~2.3s, loud notes
 
-/// Below this the envelope is considered finished and is snapped to zero.
+/// Where the envelope is considered finished and is snapped to zero.
 ///
-/// A one-pole decay approaches zero asymptotically and would leave the voice
-/// running forever at an inaudible level, holding the gate high and burning
-/// cycles. 8 of 4095 is about -54dB.
-constexpr int32_t kEnvFloor = 8;
+/// A one-pole approaches zero asymptotically and would otherwise run forever,
+/// holding the gate output high and blocking the next note from starting
+/// cleanly. So it has to be cut somewhere — but WHERE matters a great deal.
+///
+/// This was 8 of 4095, which is -54dB. That sounds negligible written down and
+/// is plainly audible in the room: it lops the last 18dB off every note, so
+/// the tail stops rather than fades. Reported from hardware as "the decay to
+/// silence is always too abrupt - I can hear it cut off".
+///
+/// The right floor is one step below what the DAC can render. Output is 12-bit
+/// and LevelQ12() shifts the accumulator down by kEnvFrac, so the last audible
+/// level is env == (1 << kEnvFrac). Cutting there means the envelope runs
+/// exactly as long as it is audible and not one tick longer — the tail plays
+/// out in full, and the ~85ms it used to spend counting down below audibility
+/// (with the gate still high) is gone too.
+constexpr int32_t kEnvFloor = 1;
 
 /// Extra fractional bits carried in the envelope accumulator.
 ///

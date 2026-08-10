@@ -149,6 +149,12 @@ class Flute:
             self.sine = 0
             self.folded = 0
             self.square = False
+            # Park the phase so the next note starts at zero rather than
+            # mid-cycle -- otherwise every attack begins with a step. See
+            # flute.cpp.
+            self.ph = 0
+            self.dcx1 = self.dcy1 = 0
+            self.dcx2 = self.dcy2 = 0
             return
 
         self.ph = (self.ph + self.inc) & 0xFFFFFFFF
@@ -348,6 +354,37 @@ def test_no_dc():
                    abs(ms) < 30 and abs(mf) < 30, f"{ms:+.1f} / {mf:+.1f}")
 
 
+def test_notes_start_without_a_click():
+    """A new note must begin at zero, not wherever the oscillator was.
+
+    A free-running phase puts a step of up to full scale on the first sample of
+    every attack -- measured at 2671 counts against the ~200 a 220Hz sine moves
+    per sample. The envelope cannot hide it, because even the fastest attack is
+    applied after the oscillator.
+    """
+    print("clean attacks")
+    f = Flute()
+    f.set_pitch(220.0)
+    f.fold = fold_for(2048)
+    out = []
+    for _ in range(2000):
+        f.step(3000)
+        out.append(f.sine)
+    for _ in range(500):
+        f.step(0)
+        out.append(f.sine)
+    for _ in range(200):
+        f.step(3000)
+        out.append(f.sine)
+
+    seam = out[2495:2520]
+    jump = max(abs(seam[i] - seam[i - 1]) for i in range(1, len(seam)))
+    print(f"        largest jump at the seam: {jump}")
+    # One sample of a 220Hz sine at this level moves ~200 counts, so anything
+    # in that region is the waveform itself rather than a discontinuity.
+    check_true("a new note starts without a step", jump < 400, f"{jump} counts")
+
+
 def test_no_clipping():
     print("headroom")
     bad = []
@@ -387,6 +424,7 @@ def main():
     test_fold_adds_harmonics()
     test_outputs_agree()
     test_no_dc()
+    test_notes_start_without_a_click()
     test_no_clipping()
 
     print()

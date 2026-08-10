@@ -29,7 +29,7 @@ ATTACK_SHIFT_FAST = 2
 ATTACK_SHIFT_SLOW = 11
 RELEASE_SHIFT_MIN = 6
 RELEASE_SHIFT_MAX = 10
-ENV_FLOOR = 8
+ENV_FLOOR = 1
 ENV_FRAC = 8
 
 VIB_HZ_TO_INC_Q16 = 366503876
@@ -187,6 +187,23 @@ def test_silence():
     tail = next((i for i in range(300, len(out)) if out[i] == 0), None)
     check_true("the release reaches exact silence", tail is not None,
                f"at {ms(tail):.0f}ms" if tail else "never")
+
+    # THE TAIL MUST FADE, NOT STOP.
+    #
+    # Reported from hardware: "the decay to silence is always too abrupt - I
+    # can hear it cut off". The floor was 8 of 4095, which is -54dB: negligible
+    # written down, plainly audible in the room, and it lopped the last 18dB
+    # off every note. The last level before silence must be 1, the smallest
+    # step the 12-bit output can render.
+    last = out[tail - 1]
+    check("the last audible level before silence is 1", last, 1)
+
+    # And it must LINGER there rather than leaping from loud to nothing: the
+    # final few dB should take a sensible number of ticks.
+    quiet_from = next(i for i in range(300, tail) if out[i] <= 4)
+    check_true("the last few dB take real time",
+               ms(tail - quiet_from) > 5,
+               f"{ms(tail-quiet_from):.0f}ms below level 4")
 
 
 def test_a_tap_is_a_note():

@@ -122,6 +122,18 @@ Nothing feeds back into the nonlinearity, so it can only colour a pitch that is
 already exact. **If you are tempted to reintroduce a feedback path for
 authenticity, read the devlog first.**
 
+**Envelope floors belong at the DAC's resolution, not at a round number.**
+`kEnvFloor` was 8 of 4095 — -54dB — which chopped the last 18dB off every note
+and was clearly audible as the decay "cutting off". The last audible level is
+`1 << kEnvFrac`; anything above that removes tail the hardware could still
+render, anything below just holds the gate high in silence.
+
+**The oscillator's phase is parked at zero while silent.** Letting it free-run
+puts a step of up to full scale on the first sample of every attack — measured
+at 2671 counts against the ~200 a 220Hz sine moves per sample — and no envelope
+can hide it, because the attack is applied after the oscillator. `flutesim.py`
+asserts the seam stays under 400 counts.
+
 **The instrument is BOWED.** Silent until the switch is held or Pulse In 1 goes
 high. Tap = struck note, hold = sustain, and while held the fingering glides
 without re-attacking. Main sets the note's peak AND its release length (louder

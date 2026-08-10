@@ -149,9 +149,9 @@ void Breath::Tick()
 		if (step == 0) step = 1;
 		env_ -= step;
 
-		// Snap the tail to silence. A one-pole approaches zero asymptotically
-		// and would otherwise hold the gate output high forever at an
-		// inaudible level.
+		// Snap the tail to silence at the point it stops being audible — see
+		// kEnvFloor. Cutting any higher chops the end off every note; cutting
+		// lower just holds the gate high while nothing sounds.
 		if (env_ < (kEnvFloor << kEnvFrac)) env_ = 0;
 	}
 

@@ -34,6 +34,20 @@ void __not_in_flash_func(Flute::Step)(int32_t levelQ12)
 		sine_   = 0;
 		folded_ = 0;
 		square_ = false;
+
+		// Park the phase at zero while silent, so the next note STARTS at zero
+		// rather than wherever the oscillator happened to be.
+		//
+		// Letting it free-run puts a step of up to full scale on the first
+		// sample of every attack — measured at 2671 counts, against the ~200 a
+		// 220Hz sine moves per sample — which is a click on every note. The
+		// envelope cannot hide it because even the fastest attack is applied
+		// AFTER this point.
+		//
+		// It also resets the DC blockers, whose stored history belongs to a
+		// note that has finished.
+		phase_ = 0;
+		dcX1_ = dcY1_ = dcX2_ = dcY2_ = 0;
 		return;
 	}
 

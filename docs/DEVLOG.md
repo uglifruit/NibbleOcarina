@@ -5,6 +5,46 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v4.0.1 — the tail was being chopped, and every attack clicked
+
+> "the Decay to silence is always too abrupt (I can hear it cut off)"
+
+Two separate faults at the same seam, and the second was not reported because
+the first was masking it.
+
+### The floor was 18dB too high
+
+`kEnvFloor` snapped the envelope to zero at level 8 of 4095 — **-54dB**. That
+reads as negligible and is plainly audible: it lopped the last 18dB off every
+note, so the tail stopped rather than faded.
+
+The right floor is one step below what the DAC can render. Output is 12-bit and
+`LevelQ12()` shifts the accumulator down by `kEnvFrac`, so the last audible
+level is `env == (1 << kEnvFrac)`, i.e. **1**. Cutting there means the envelope
+runs exactly as long as it is audible and not one tick longer.
+
+A loud note's release went from 1086ms to 1484ms, and the last few dB now take
+about 300ms instead of being removed. As a bonus the ~85ms the old envelope
+spent counting down BELOW audibility — with Pulse Out 1 still high — is gone.
+
+### And every attack began with a step
+
+Checking whether the *start* of a note was also at fault turned up a separate
+bug: the oscillator's phase kept free-running while the voice was silent, so a
+new note began wherever the sine happened to be. Measured, a **2671-count step**
+on the first sample — against the ~200 a 220Hz sine moves per sample. That is a
+click on every single note, and no envelope can hide it because even the fastest
+attack is applied after the oscillator.
+
+Parking the phase at zero while silent takes it to 87 counts. The DC blockers
+are reset with it, since their stored history belongs to a note that has ended.
+
+**The lesson: when a seam sounds wrong, check both sides of it.** The report was
+about the decay; the attack was worse and nobody had mentioned it, because the
+chopped tail was the louder problem.
+
+---
+
 ## v4.0.0 — the instrument is bowed, not blown
 
 The largest change since the voice was rebuilt, and it changes how the card is
