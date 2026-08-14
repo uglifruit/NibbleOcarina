@@ -29,6 +29,8 @@ ATTACK_SHIFT_FAST = 2
 ATTACK_SHIFT_SLOW = 11
 RELEASE_SHIFT_MIN = 6
 RELEASE_SHIFT_MAX = 10
+RELEASE_TRIM_SHIFT = 5
+RELEASE_SHIFT_FLOOR = 2
 ENV_FLOOR = 1
 EASE_LEVEL_1 = 32
 EASE_TAIL_TICKS = 96
@@ -78,11 +80,13 @@ class Breath:
         self.vib_phase = 0
         self.tail_step = 0
         self.tail_ticks_left = 0
+        self.main_raw = 0
 
     # -- inputs --------------------------------------------------------------
 
     def set_knob(self, knob, cv_add=0):
         v = max(0, min(4095, knob + cv_add))
+        self.main_raw = v   # tick() reads this live during release
         if v < BREATH_THRESH:
             self.peak = 0
             self.effort = 0
@@ -142,22 +146,32 @@ class Breath:
         elif self.env > 0:
             lvl = self.env >> ENV_FRAC
 
+            # MAIN'S SECOND JOB: once the gate has fallen its peak-setting job
+            # is done, so the same physical position now TRIMS the release,
+            # live, every tick. Fully CW leaves the peak-coupled length
+            # untouched; CCW shortens it, all the way to a near-instant
+            # truncate. It can only shorten, never lengthen past what the
+            # peak already earned. See breath.h/kReleaseTrimShift.
+            trim = (RELEASE_TRIM_SHIFT * (4096 - self.main_raw)) >> 12
+
             if self.tail_ticks_left > 0 or lvl <= EASE_LEVEL_1:
                 # THE FINAL RAMP -- linear, not exponential. An exponential's
                 # step is a fraction of the remainder, so once the remainder
                 # is only a few LevelQ12() counts the step rounds to less than
                 # one count and the audible output holds flat for many ticks
                 # before snapping to zero -- a plateau then a cliff. A linear
-                # ramp's step is fixed ONCE, on entry, from the level at that
-                # instant, and held for the whole ramp -- recomputing it every
-                # tick against the shrinking env would just be a second,
-                # slower exponential with the same flat-then-cliff shape. See
-                # breath.cpp.
-                if self.tail_ticks_left == 0:
-                    self.tail_step = (lvl << ENV_FRAC) // EASE_TAIL_TICKS
+                # ramp's step is fixed from the CURRENT level whenever the
+                # remaining ticks would give a longer ramp than the trimmed
+                # length wants -- on first entry, and again if Main is turned
+                # further CCW mid-ramp. Never recomputed merely because env
+                # has moved; that reconstructs the exponential's own bug one
+                # level down. See breath.cpp.
+                ticks = max(1, EASE_TAIL_TICKS >> trim)
+                if self.tail_ticks_left == 0 or self.tail_ticks_left > ticks:
+                    self.tail_step = (lvl << ENV_FRAC) // ticks
                     if self.tail_step == 0:
                         self.tail_step = 1
-                    self.tail_ticks_left = EASE_TAIL_TICKS
+                    self.tail_ticks_left = ticks
                 self.env -= self.tail_step
                 self.tail_ticks_left -= 1
                 if self.tail_ticks_left <= 0 or self.env < (ENV_FLOOR << ENV_FRAC):
@@ -165,10 +179,13 @@ class Breath:
                     self.tail_ticks_left = 0
             else:
                 # RELEASE proper, down to EASE_LEVEL_1 where the ramp above
-                # takes over. Rate comes from the note's own peak -- loud
-                # notes ring on, quiet ones are short.
+                # takes over. BASE rate comes from the note's own peak -- loud
+                # notes ring on, quiet ones are short -- then `trim` shortens
+                # that live, on top, while the gate is up.
                 rel = RELEASE_SHIFT_MIN + (
                     ((RELEASE_SHIFT_MAX - RELEASE_SHIFT_MIN) * self.peak) >> 12)
+                rel = (rel - trim) if rel > trim + RELEASE_SHIFT_FLOOR \
+                    else RELEASE_SHIFT_FLOOR
                 step = self.env >> rel
                 if step == 0:
                     step = 1
@@ -290,6 +307,92 @@ def test_the_tail_eases_off():
 
     check_true("and the whole tail is musically long", total > 500,
                f"{total:.0f}ms")
+
+
+def test_release_trim():
+    """Once released, Main's SECOND job: live release-speed control.
+
+    Requested directly: "Need release ... to ramp down slower to silence (at
+    some X/main) ... If I want to truncate the note, I can main knob CCW to
+    speed up the release phase - so have it dynamically calculated."
+
+    Main sets peak while held. The instant the gate falls, the same knob
+    position starts meaning something else: turning it toward zero shortens
+    the release live, all the way to a fast truncate; leaving it (or turning
+    it CW) plays the peak-coupled length out in full. This must work AFTER
+    the gate has already fallen -- the whole point is truncating a tail
+    that's already sounding, not something decided in advance.
+    """
+    print("release trim (dynamic, after release)")
+
+    def release_time(knob_during_release):
+        b = Breath()
+        b.set_knob(4095)
+        b.set_attack(0)
+        b.set_gate(True)
+        for _ in range(600):
+            b.tick()
+        b.set_gate(False)
+        b.set_knob(knob_during_release)   # set AFTER the gate falls
+        for i in range(60000):
+            b.tick()
+            if b.env == 0:
+                return ms(i)
+        return None
+
+    full = release_time(4095)      # left at full CW: untouched length
+    half = release_time(2048)
+    fast = release_time(0)         # full CCW: truncate
+    print(f"        Main CW {full:.0f}ms, mid {half:.0f}ms, "
+          f"CCW {fast:.0f}ms")
+    check_true("turning Main CCW after release shortens the tail",
+               fast < half < full, f"{fast:.0f} < {half:.0f} < {full:.0f}")
+    check_true("full CCW gives a genuine truncate, not just 'shorter'",
+               fast < full / 10, f"{fast:.0f}ms vs full {full:.0f}ms")
+
+    # And it has to be LIVE: turning the knob mid-tail (not just choosing a
+    # position before releasing) must still shorten what's left of it.
+    b = Breath()
+    b.set_knob(4095)
+    b.set_attack(0)
+    b.set_gate(True)
+    for _ in range(600):
+        b.tick()
+    b.set_gate(False)
+    b.set_knob(4095)                # start released at full length
+    for _ in range(300):
+        b.tick()
+    level_before_trim = b.level()
+    b.set_knob(0)                   # yank Main to CCW mid-tail
+    remaining = 0
+    for i in range(60000):
+        b.tick()
+        remaining += 1
+        if b.env == 0:
+            break
+    print(f"        mid-tail at level {level_before_trim}, "
+          f"{ms(remaining):.0f}ms left after yanking Main to 0")
+    check_true("a mid-tail knob change is honoured immediately",
+               ms(remaining) < 100, f"{ms(remaining):.0f}ms")
+
+
+def test_main_ignored_while_held():
+    """Main's release-trim must not leak into the note while it is HELD.
+
+    Only peak (the S-curve) reads Main while gate_ is true. This just pins
+    down that turning Main during a HOLD still behaves exactly as test_swell
+    describes -- swelling the peak -- and does not also start trimming
+    something, since there is no release running yet.
+    """
+    print("Main during hold is still just peak")
+    b = Breath()
+    b.set_knob(4095)
+    b.set_attack(0)
+    b.set_gate(True)
+    for _ in range(3000):
+        b.tick()
+    check_true("a long hold at full Main reaches full peak",
+               b.level() > 4000, f"{b.level()}")
 
 
 def test_a_tap_is_a_note():
@@ -472,6 +575,8 @@ def main():
     print("breathsim — model of breath.cpp\n")
     test_silence()
     test_the_tail_eases_off()
+    test_release_trim()
+    test_main_ignored_while_held()
     test_a_tap_is_a_note()
     test_hold_sustains()
     test_swell()

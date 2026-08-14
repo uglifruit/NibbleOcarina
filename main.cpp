@@ -254,11 +254,45 @@ private:
 		if (ui_ == UiMode::Learn) { LearnTick(); return; }
 
 		// --- Play ----------------------------------------------------------
-		int8_t idx = kComboNone;
-		if (levels_.Step(CVIn1(), idx) == LevelEvent::Trigger)
+
+		// THE BOW. Either source sounds the instrument, and they behave
+		// identically: a short press is a struck note, a long one sustains.
+		// So a sequencer gate plays the card exactly as a finger does.
+		//
+		// gateLatched_ swallows a switch that was already held at boot, so the
+		// card cannot fire a note on the release of a switch nobody pressed.
+		//
+		// Computed before the fingering is read, so NoteOn() below can tell
+		// whether a settled change happened while held or while releasing.
+		bool gate = (SwitchVal() == Switch::Down) || PulseIn1();
+		if (gateLatched_)
 		{
-			NoteOn(idx);
+			if (!gate) gateLatched_ = false;   // released; arm normally
+			gate = false;
 		}
+
+		// A settled fingering change only becomes a NOTE while the bow is
+		// down. During the release tail it is READ (levels_ keeps tracking,
+		// so the very next strike is instant rather than one tick stale) but
+		// not ACTED on: the pitch stays exactly where the bow left it for the
+		// whole tail, however the fingers move underneath it. Re-fingering a
+		// dying note would be a glide nobody asked for and a pitch that
+		// doesn't match what was struck — a held note re-fingers because a
+		// bowed string does; a released one is already committed to the note
+		// it was given.
+		int8_t idx = kComboNone;
+		const bool settled = (levels_.Step(CVIn1(), idx) == LevelEvent::Trigger);
+		if (settled && gate) NoteOn(idx);
+
+		// A fresh strike ARRIVING during a release tail must pick up whatever
+		// is under the fingers RIGHT NOW, not the frozen note the tail was
+		// still playing — otherwise a re-strike after a silent re-fingering
+		// (no settled event fires because the fingering already changed once,
+		// mid-tail, before this rising edge) would attack the stale pitch.
+		// levels_.Current() is always live, freeze or no freeze, so the edge
+		// alone is enough to resync.
+		if (gate && !gateLast_) NoteOn(levels_.Current());
+		gateLast_ = gate;
 
 		// The two knobs, each offset by an audio input used as CV.
 		//
@@ -274,21 +308,12 @@ private:
 		if (xKnob > 4095) xKnob = 4095;
 		xNow_ = xKnob;
 
+		// Main is read every tick regardless of gate state — which of its two
+		// jobs (set peak, or trim the release) this position does is Breath's
+		// call, based on its own gate state. See breath.h.
 		breath_.SetKnob(KnobVal(Knob::Main), mainCv);
 		breath_.SetAttack(xNow_);
 
-		// THE BOW. Either source sounds the instrument, and they behave
-		// identically: a short press is a struck note, a long one sustains.
-		// So a sequencer gate plays the card exactly as a finger does.
-		//
-		// gateLatched_ swallows a switch that was already held at boot, so the
-		// card cannot fire a note on the release of a switch nobody pressed.
-		bool gate = (SwitchVal() == Switch::Down) || PulseIn1();
-		if (gateLatched_)
-		{
-			if (!gate) gateLatched_ = false;   // released; arm normally
-			gate = false;
-		}
 		breath_.SetGate(gate);
 
 		// Vibrato comes from BOTH knobs: Main sets how much, X sets what kind.
@@ -364,7 +389,12 @@ private:
 		downLast_ = down;
 	}
 
-	/// A new fingering arrived.
+	/// Sets the target pitch. Called from ControlTick() in two situations
+	/// only: a settled fingering change WHILE THE BOW IS DOWN, and the rising
+	/// edge of the gate itself (to resync a fresh strike to whatever is under
+	/// the fingers, even if it changed silently during the previous note's
+	/// release). Never called for a fingering change during a release tail —
+	/// see the comment above that call site.
 	///
 	/// It does NOT start a note — the bow does that. Changing fingering while
 	/// a note is sounding simply moves its pitch, which is how a bowed string
@@ -879,6 +909,7 @@ private:
 	bool    tapped_      = false;
 	bool    portamento_  = false;
 	bool    gateLatched_ = false;
+	bool    gateLast_    = false;   ///< for the re-strike pickup in ControlTick()
 
 	int32_t  level_      = 0;   ///< what the voice is given, after every offset
 	int32_t  xNow_       = 0;   ///< X knob after its CV offset

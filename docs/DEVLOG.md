@@ -5,6 +5,99 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v4.1.0 — Main plays the release too, and a dying note stops re-fingering
+
+> "Need release (after switch released) the decay phase to ramp down slower
+> to silence (at some X/main), and *don't* allow note changes during this
+> release - only during held. It I want to truncate the note, I can main
+> knob CCW to speed up the release phase - so have it dynamically
+> calculated."
+
+Two changes, both about what happens in the gap between letting go of the
+bow and the tail finally going silent — a part of the note that, until now,
+had no live control surface of its own at all.
+
+### Main has two jobs, in sequence, on one position
+
+While the gate is held, Main sets the note's peak (as it always has). The
+instant the gate falls, that job is finished — the peak already shaped the
+note — so the SAME physical knob position starts meaning something else:
+live release-time control. Leave it where it was, or turn it up, and the
+tail plays out at the length its peak already earned. Turn it down and the
+release shortens **as you turn it**, continuously, down to a near-instant
+truncate — a way to choke a note off without touching the switch, useful
+exactly when the switch is what you don't want to disturb (mid-phrase, or
+when Pulse In 1 is driving the gate from a sequencer).
+
+This had to be genuinely dynamic, not a value latched at the moment of
+release: the request was explicit that turning Main CCW *after* letting go
+must cut a tail that is already sounding, not merely pre-select a shorter
+release before the fact. `Breath::Tick()` now reads Main's raw position
+every tick regardless of gate state (`mainRaw_`, latched in `SetKnob()`) and
+recomputes a *trim* shift from it live during release:
+
+```
+trim = kReleaseTrimShift * (4096 - mainRaw) / 4096
+```
+
+full CW (`mainRaw = 4095`) gives `trim ≈ 0` — untouched; full CCW gives
+`trim = kReleaseTrimShift` (5), which is subtracted from the peak-coupled
+release shift, floored at `kReleaseShiftFloor` (2) so it can shrink to a
+genuine truncate rather than merely "faster". The exponential portion of
+the release simply uses `rel - trim` each tick. The final linear ramp (see
+v4.0.3) needed the same live responsiveness: its length in ticks is
+`kEaseTailTicks >> trim`, and the fixed per-tick step is **recomputed**
+whenever the trimmed length would now be shorter than what's left of the
+current ramp — on entry, and again if Main is turned further CCW mid-ramp —
+but never merely because the envelope itself moved, which would reopen the
+v4.0.2 bug one level down.
+
+The rule that Main can only shorten, never lengthen, past what the peak
+itself earned is deliberate: letting the release trim *extend* past
+`kReleaseShiftMax` would decouple "louder rings on longer" from what
+actually determines how long a note rings, undoing the whole point of the
+peak/release coupling from v4.0.0.
+
+### A released note stops listening to the fingers
+
+Previously, `ControlTick()` called `NoteOn()` on every settled fingering
+change unconditionally — while held OR while releasing. That's how a bowed
+string works while the bow is on the string, but a note that's already been
+let go and is only fading out has no business re-fingering: it wasn't asked
+for, and it would read as either an unwanted glide (portamento on) or an
+unwanted retune-in-place (portamento off), neither of which the player
+struck.
+
+`ControlTick()` now computes the gate first, then only calls `NoteOn()` on a
+settled change when the gate is actually up. During the release tail the
+level tracker (`levels_`) keeps running exactly as before — `Current()`
+stays live — so nothing about detection changes and the very next strike is
+never one tick stale; the fingering is simply not *acted on* while nothing
+is being held.
+
+That raised the obvious question: what happens if the player re-fingers
+silently during a tail (no settled event ever fires again after the first
+change, because the fingering doesn't move a second time) and then strikes
+again — does the new note pick up the CURRENT fingering, or the one frozen
+at the moment of release? It must be the current one, or a re-strike would
+attack a stale pitch nobody asked for. So `ControlTick()` also tracks the
+gate's own rising edge (`gateLast_`) and calls `NoteOn(levels_.Current())`
+on every fresh strike, independent of whether a `Trigger` fired that same
+tick — `levels_.Current()` is always live, freeze or no freeze, so the edge
+alone is enough to resync.
+
+Verified: `tools/breathsim.py` gained `test_release_trim()` (Main CW vs mid
+vs CCW gives strictly shorter releases, full CCW is a genuine truncate under
+a tenth of the untrimmed length, and a knob change applied AFTER the gate
+has already fallen — mid-tail — is honoured within milliseconds, not just a
+pre-release choice) and `test_main_ignored_while_held()` (Main during a hold
+still only sets peak, confirming the two jobs don't bleed into each other).
+`sh tools/syntax.sh` all ok, all four models PASS, clean rebuild (4.62%
+flash, 7.14% RAM — both dropped slightly; v4.0.3's two-threshold ease
+constants were replaced rather than added to).
+
+---
+
 ## v4.0.3 — the "easing" in v4.0.2 was invisible at the ear
 
 > "still VERY AUDIBLY stopping. I'm not hearing that decay to silence."

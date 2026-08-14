@@ -48,7 +48,7 @@ knob** — hold the switch down for two seconds.
 | **Audio In 1** | offsets the Main knob *(used as CV)* |
 | **Audio In 2** | offsets the X knob *(used as CV)* |
 | **Pulse In 1** | the bow, same as the switch: gate high sounds a note |
-| **Main** | note peak, release length, then vibrato *(fine tune while calibrating)* |
+| **Main** | held: note peak, then vibrato · released: trims the release live *(fine tune while calibrating)* |
 | **X** | attack shape, vibrato character, wavefold *(octave while calibrating)* |
 | **Y** | scale *(coarse tune while calibrating)* |
 | **Switch ↑** | flick to toggle portamento — shown on LED 4 |
@@ -86,14 +86,17 @@ note and changing the fingering glides to the new pitch without re-attacking —
 the way a finger moves on a bowed string. Pulse In 1 does exactly the same, so a
 sequencer gate plays it the way your finger does.
 
-**Releasing a finger is a note.** Come off AB onto A and you hear A. That is
-what makes trilling work: hold one hole, waggle another, and you get an
-alternation. Up to about 16 waggles a second is clean. Under a held bow the
-whole trill happens inside one note.
+**Releasing a finger is a note — but only while the bow is down.** Come off AB
+onto A while holding and you hear A: that is what makes trilling work, hold one
+hole, waggle another, get an alternation, up to about 16 waggles a second
+clean. Once the bow comes up the fingering **locks**: the release tail keeps
+ringing at whatever note it was given, however the fingers move underneath it,
+and only picks up new fingering on the *next* strike. A dying note doesn't
+re-finger the way a held one does — it's already committed.
 
-**The Main knob does three things at once.** It sets how loud the note is, how
-long it rings, and — past about a third of its travel — how much vibrato it
-gains:
+**The Main knob does three things, and the last one changes meaning the moment
+you let go.** While held it sets how loud the note is, how long it *will* ring,
+and — past about a third of its travel — how much vibrato it gains:
 
 | Main | note |
 |---|---|
@@ -105,6 +108,16 @@ gains:
 Loud notes lasting longer is the coupling that makes one knob feel like
 dynamics rather than a fader. Turn it while the bow is held and the note swells
 or eases under your hand.
+
+**The instant you release, Main's job changes.** It stops setting peak — the
+note has already been given its shape — and starts **trimming the release**,
+live, for as long as the tail is still sounding. Leave the knob where it was
+(or turn it up) and the note rings out for the length its peak earned. Turn it
+down during the tail and the release shortens as you turn it, all the way to a
+near-instant cutoff — a way to choke a note off without touching the switch,
+and it works on a tail that's already ringing, not just a position chosen in
+advance. It can only shorten what the peak bought, never stretch a note out
+past its own length.
 
 **X chooses the attack and the vibrato together:**
 

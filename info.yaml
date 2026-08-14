@@ -3,13 +3,13 @@ Name: NIBBLE OCARINA
 short-description: Turns the Workshop System's four buttons into the finger holes of a bowed flute you play with a switch
 Language: C++ (ComputerCard)
 Creator: Andy Jenkinson (uglifruit)
-Version: "4.0.3"
+Version: "4.1.0"
 Status: Released
 License: CC-BY-4.0
 repository: https://github.com/uglifruit/NibbleOcarina
 Editor: none
 date-created: 2026-08-08
-date-updated: 2026-08-08
+date-updated: 2026-08-14
 
 contact:
   social:
@@ -17,7 +17,7 @@ contact:
 
 uf2:
   - path: UF2/ocarina.uf2
-    name: NIBBLE OCARINA 4.0.3
+    name: NIBBLE OCARINA 4.1.0
 
 tags:
   - flute
@@ -158,7 +158,7 @@ controls:
       description: The switch's resting position. Nothing sounds here - the card is silent until you bow it, either by holding the switch down or by sending a gate to Pulse In 1.
     down:
       name: The bow
-      description: "THE BOW. The card is silent until you sound it - TAP for a struck note that attacks and rings out, or HOLD to sustain for as long as you like. While held, turning the Main knob swells or eases the note in real time, and changing the fingering GLIDES to the new pitch without re-attacking, so a phrase can be shaped and re-fingered under one continuous bow. Pulse In 1 does exactly the same thing. There is no hold gesture on this switch and no way to reach calibration from it - calibration runs once at power-on, and you reset to get back to it."
+      description: "THE BOW. The card is silent until you sound it - TAP for a struck note that attacks and rings out, or HOLD to sustain for as long as you like. While held, turning the Main knob swells or eases the note in real time, and changing the fingering GLIDES to the new pitch without re-attacking, so a phrase can be shaped and re-fingered under one continuous bow. The moment you let go, the fingering LOCKS - the tail keeps ringing at the note it was given, however the fingers move underneath it, and only picks up new fingering on the next strike. Pulse In 1 does exactly the same thing. There is no hold gesture on this switch and no way to reach calibration from it - calibration runs once at power-on, and you reset to get back to it."
     tap:
       name: Capture
       description: During calibration, captures the combination you are holding - a tap while the voltage is still moving is rejected with a flash rather than silently recording a mid-slew reading. In normal play a tap is simply a very short bow stroke, which is what gives a struck note.
@@ -166,7 +166,7 @@ controls:
     -
       main:
         name: Breath
-        description: "The card's only way to be silent - below about seven percent of travel the instrument does not sound at all. It sets the note's PEAK and, coupled to it, how long the note takes to die away - a loud note rings for over a second, a quiet one is gone in under a tenth. One gesture, two musical consequences, which is what makes it feel like dynamics rather than a fader. The peak follows an S-curve that leaves silence gently, rises steeply through the middle and flattens off around half travel, and past that point the knob stops adding volume and starts adding VIBRATO instead. So the bottom half is how loud and the top half is how much it sings, and a phrase can move from quiet and steady through loud and steady into loud and singing on one control. Nothing in its travel changes the PITCH - a register switch lived here until v3.2, a leftover from an older voice, and it read as an octave jump in the middle of the vibrato. The octave is chosen with X during calibration instead. DURING CALIBRATION this knob becomes fine tune, plus or minus one hundred cents."
+        description: "The card's only way to be silent - below about seven percent of travel the instrument does not sound at all. It has two jobs, one after the other, on the SAME physical position. WHILE HELD it sets the note's PEAK and, coupled to it, how long the note takes to die away once you let go - a loud note rings for over a second, a quiet one is gone in under a tenth. The peak follows an S-curve that leaves silence gently, rises steeply through the middle and flattens off around half travel, and past that point the knob stops adding volume and starts adding VIBRATO instead. So the bottom half is how loud and the top half is how much it sings. THE MOMENT YOU LET GO, Main's job changes: it now TRIMS the release live, every tick, for as long as the tail keeps sounding. Leave it where it was and the note rings out at the length its peak earned; turn it further anticlockwise and the tail shortens, all the way down to a near-instant truncate - a way to cut a note off without touching the switch. It can only shorten what the peak bought, never lengthen past it. Nothing in its travel changes the PITCH - a register switch lived here until v3.2, a leftover from an older voice, and it read as an octave jump in the middle of the vibrato. The octave is chosen with X during calibration instead. DURING CALIBRATION this knob becomes fine tune, plus or minus one hundred cents."
       x:
         name: Timbre
         description: "Two jobs at once. It sets the ATTACK SHAPE, from a three-millisecond strike at fully anticlockwise to an eight-hundred-millisecond swell at fully clockwise. And it sets what KIND of vibrato the Main knob adds, morphing through three characters: fully anticlockwise is fast and wide (8Hz, 50 cents) which is dramatic, the centre is fast and tight (8Hz, 10 cents) which is nervous and close, and fully clockwise is slow and wide (3Hz, 50 cents) which is operatic. Turning it up also tilts the level a little and opens the wavefolder on Audio Out 2, so the clockwise end is slower-vibrato, slightly louder and more harmonically complex at once. The fold deliberately stops at half its available range - past that point the harmonics dip before rising again, and a knob that gets brighter then duller reads as broken."

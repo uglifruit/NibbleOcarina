@@ -10,7 +10,7 @@ namespace nib {
 
 void Breath::Init()
 {
-	peak_ = effort_ = env_ = 0;
+	peak_ = effort_ = env_ = mainRaw_ = 0;
 	gate_ = struck_ = false;
 	attack_ = kAttackShiftFast;
 	tailStep_ = tailTicksLeft_ = 0;
@@ -23,6 +23,7 @@ void Breath::SetKnob(int32_t knob, int32_t cvAdd)
 	int32_t v = knob + cvAdd;
 	if (v < 0) v = 0;
 	if (v > 4095) v = 4095;
+	mainRaw_ = v;   // Tick() reads this live during release — see kReleaseTrimShift
 
 	if (v < kBreathThresh)
 	{
@@ -143,6 +144,15 @@ void Breath::Tick()
 	{
 		const int32_t lvl = env_ >> kEnvFrac;
 
+		// MAIN'S SECOND JOB: once the gate has fallen, its peak-setting job is
+		// done — the peak already shaped the note — so the same physical
+		// position now TRIMS the release, live, every tick. Fully CW leaves
+		// the peak-coupled length untouched; turning CCW shortens it, all the
+		// way to a near-instant truncate. It can only shorten, never lengthen
+		// past what the peak already earned — see kReleaseTrimShift.
+		const uint8_t trim = static_cast<uint8_t>(
+			(kReleaseTrimShift * (4096 - mainRaw_)) >> 12);
+
 		if (tailTicksLeft_ > 0 || lvl <= kEaseLevel1)
 		{
 			// THE FINAL RAMP — linear, not exponential, and sized in ticks
@@ -155,15 +165,21 @@ void Breath::Tick()
 			// a plateau then a cliff, which reads as stopping rather than
 			// fading. See kEaseLevel1's comment.
 			//
-			// tailStep_ is computed ONCE, on entry, from the level at that
-			// instant, and held fixed for the whole ramp. Recomputing it every
-			// tick against env_'s shrinking value would just be a second,
-			// slower exponential with the same flat-then-cliff shape.
-			if (tailTicksLeft_ == 0)
+			// tailStep_ is recomputed from the CURRENT level whenever the
+			// remaining tick count would give a longer ramp than the trimmed
+			// length wants — i.e. on first entry, and again if Main is turned
+			// further CCW mid-ramp. It is never recomputed merely because env_
+			// has moved; that would reconstruct the exponential's own bug one
+			// level down. Recomputing against a knob change is safe because it
+			// is still a FIXED step for however many ticks remain, not a
+			// fraction of a shrinking remainder.
+			int32_t ticks = kEaseTailTicks >> trim;
+			if (ticks < 1) ticks = 1;
+			if (tailTicksLeft_ == 0 || tailTicksLeft_ > ticks)
 			{
-				tailStep_ = (lvl << kEnvFrac) / kEaseTailTicks;
+				tailStep_ = (lvl << kEnvFrac) / ticks;
 				if (tailStep_ == 0) tailStep_ = 1;
-				tailTicksLeft_ = kEaseTailTicks;
+				tailTicksLeft_ = ticks;
 			}
 			env_ -= tailStep_;
 			if (--tailTicksLeft_ <= 0 || env_ < (kEnvFloor << kEnvFrac))
@@ -174,14 +190,18 @@ void Breath::Tick()
 		}
 		else
 		{
-			// RELEASE proper: its rate comes from the note's own peak rather
-			// than from a knob — loud notes ring on, quiet ones are short.
-			// That coupling is what makes one knob feel like dynamics. This
+			// RELEASE proper: its BASE rate comes from the note's own peak —
+			// loud notes ring on, quiet ones are short, which is what makes
+			// the knob feel like dynamics while it is setting peak. `trim`
+			// then shortens that live, on top, while the gate is up. This
 			// runs exponentially down to kEaseLevel1, where the ramp above
 			// takes over for a shaped, audible ending.
-			const uint8_t rel = static_cast<uint8_t>(
+			uint8_t rel = static_cast<uint8_t>(
 				kReleaseShiftMin +
 				(((kReleaseShiftMax - kReleaseShiftMin) * peak_) >> 12));
+			rel = (rel > trim + kReleaseShiftFloor)
+			          ? static_cast<uint8_t>(rel - trim)
+			          : kReleaseShiftFloor;
 			int32_t step = env_ >> rel;
 			if (step == 0) step = 1;
 			env_ -= step;

@@ -164,6 +164,30 @@ without re-attacking. Main sets the note's peak AND its release length (louder
 lasts longer); X sets the attack shape. Do not reintroduce a continuous drone —
 it was there until v4.0 and it meant every note had the same shape.
 
+**Main has two jobs on one position, in sequence, not two knobs.** While
+gated it sets peak; the instant the gate falls it stops doing that (the peak
+already shaped the note) and starts trimming the release LIVE, every tick,
+for as long as the tail sounds — CCW shortens toward a truncate, CW leaves
+the peak-coupled length alone. It can only shorten, never lengthen past
+`kReleaseShiftMax`, or "louder rings on longer" stops meaning anything.
+Requested directly: "If I want to truncate the note, I can main knob CCW to
+speed up the release phase - so have it dynamically calculated" — dynamic
+was explicit, so `Tick()` reads `mainRaw_` fresh every release tick rather
+than latching a value at the moment the gate falls. `breathsim.py`'s
+`test_release_trim()` asserts a knob change applied AFTER release is
+honoured within milliseconds, not just a pre-release choice.
+
+**A released note does not re-finger.** `NoteOn()` is only called for a
+settled fingering change while the gate is up — during the release tail the
+level tracker keeps running (so the next strike is never stale) but the
+result isn't acted on, and the tail rings out at whatever note it was given.
+Requested directly: "don't allow note changes during this release - only
+during held." The one thing that must still happen is a fresh STRIKE mid-tail
+picking up the CURRENT fingering rather than the frozen one, even if it
+changed silently (no further settled event) during the tail — handled by
+tracking the gate's own rising edge and calling `NoteOn(levels_.Current())`
+on it directly, since `Current()` stays live regardless of the freeze.
+
 **No switch position that is held while playing may carry a gesture.** This has
 now cost two bugs: switch-up as a held legato mode with a staged timer on it
 (v2.0, dropped the card into tune mode mid-slur), and switch-down as both mute

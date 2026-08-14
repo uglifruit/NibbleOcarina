@@ -80,8 +80,31 @@ constexpr uint8_t kAttackShiftSlow = 11;
 /// quiet note is gone quickly and a loud one rings on. One gesture, two
 /// musical consequences, which is what makes the knob feel like dynamics
 /// rather than like a volume fader.
+///
+/// This is the shift at Main fully CW during release — see kReleaseTrimShift
+/// below for how Main scales it live once the gate has fallen.
 constexpr uint8_t kReleaseShiftMin = 6;
 constexpr uint8_t kReleaseShiftMax = 10;
+
+/// How far Main can SPEED UP the release, once it is no longer setting peak.
+///
+/// Main has two jobs in sequence, not two knobs: while the gate is held it
+/// sets the note's peak (and, through kReleaseShiftMin/Max, the release it is
+/// coupled to). The moment the gate falls, that job is done — the peak is
+/// already fixed — so Main's same physical position starts meaning something
+/// else: how fast the tail you are already hearing dies. Turn it further CCW
+/// during the tail and the release shortens, all the way down to a truncate;
+/// leave it where it was (or turn it CW) and the release plays out at the
+/// length the peak already earned it.
+///
+/// This is deliberately a SUBTRACTION from the coupled shift, not a
+/// replacement of it — Main during release can only shorten what the peak
+/// bought, never lengthen it past kReleaseShiftMax. Lengthening past the
+/// peak's own coupling would decouple "louder rings on longer" from what
+/// actually determines how long a note rings, which is the rule this whole
+/// envelope is built around.
+constexpr uint8_t kReleaseTrimShift = 5;   ///< max shift REMOVED at Main == 0
+constexpr uint8_t kReleaseShiftFloor = 2;  ///< fastest possible release, ~1ms
 
 /// Where the release EASES OFF, as output levels.
 ///
@@ -104,7 +127,11 @@ constexpr uint8_t kReleaseShiftMax = 10;
 /// A linear ramp guarantees every one of the last few audible steps is the
 /// same size and the final step is no bigger than the others.
 constexpr int32_t kEaseLevel1 = 32;      ///< below this, switch to a linear ramp
-constexpr int32_t kEaseTailTicks = 96;   ///< ticks to cross kEaseLevel1 -> 0, ~32ms
+constexpr int32_t kEaseTailTicks = 96;   ///< ticks to cross kEaseLevel1 -> 0 at
+                                          ///< full length (Main CW), ~32ms.
+                                          ///< Scaled down with the rest of the
+                                          ///< release when Main trims it — see
+                                          ///< kReleaseTrimShift.
 
 /// Where the envelope is considered finished and is snapped to zero.
 ///
@@ -174,6 +201,11 @@ public:
 	/// what the envelope is climbing toward, so moving the knob mid-note swells
 	/// or eases it. While nothing sounds it is simply how loud the next note
 	/// will be.
+	///
+	/// Also latches the raw position for Tick() to read during release — see
+	/// kReleaseTrimShift. Main is read every tick regardless of gate state
+	/// (main.cpp does not know or care which job it is currently doing); which
+	/// job that raw position DOES is entirely Tick()'s call, based on gate_.
 	void SetKnob(int32_t knob, int32_t cvAdd);
 
 	/// Attack shape, 0..4095 from the X knob. 0 is a strike, 4095 a slow swell.
@@ -225,6 +257,7 @@ private:
 	int32_t  peak_    = 0;   ///< what the envelope climbs toward, Q12
 	int32_t  effort_  = 0;   ///< raw knob position, linear
 	int32_t  env_     = 0;   ///< the envelope itself, Q12 << kEnvFrac
+	int32_t  mainRaw_ = 0;   ///< Main's live 0..4095, for the release trim
 	bool     gate_    = false;
 	bool     struck_  = false;
 	uint8_t  attack_  = kAttackShiftFast;
