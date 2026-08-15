@@ -5,6 +5,106 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v4.2.0 — the release was never actually fixed, and switch UP gets a real job
+
+Two changes: the third and (this time, actually) final attempt at the release
+tail, and a full replacement for what switch UP does.
+
+### The release, attempt three
+
+> "Note are STILL ending very very audibly. Where is the natural decay to
+> silence?" — even at Main fully CW, untrimmed.
+
+v4.0.3's linear ramp was evenly stepped in raw amplitude and genuinely had no
+plateau — verified in the model, believed fixed. Printing the actual dB curve
+across the WHOLE 859ms tail (not just the ramp) showed why it still failed:
+the exponential portion decays nicely from 0 to about -40dB over the first
+800ms, and then the remaining 40+dB down to silence — which, because loudness
+is logarithmic, is where most of the perceived "distance to go" actually
+lives — happened in the last ~60ms. A ramp that is linear in amplitude is
+nowhere near linear in the dB the ear tracks; it just moved the cliff later
+and made it worse, since by then it was cutting off from a higher perceived
+loudness with even less time to do it in.
+
+**The fix needed neither an ease nor a ramp.** A plain one-pole IS a correct
+fade — constant percentage loss per tick is constant dB per unit time, which
+is what "fading" means. The only real defect, going all the way back to
+v4.0.1, was a plateau-then-cliff at the very bottom: `LevelQ12()` is
+`env_ >> kEnvFrac`, a 12-bit integer, and once the exponential's per-tick step
+in `env_` drops below one whole `LevelQ12()` count, the audible output holds
+flat for `(1 << kEnvFrac)` ticks before dropping by one. Both prior fixes
+treated this by changing the SHAPE of the ending (slower shift, then a
+separate ramp); the actual lever was `kEnvFrac` itself, which sets that
+plateau's length directly and had simply been left too large. Dropped from 8
+to 4: worst-case plateau anywhere in the tail is now ~5ms (checked across the
+full `kReleaseShiftMin..kReleaseShiftMax + kReleaseTrimShift` range in
+`tools/breathsim.py`), and the exponential runs start to finish with no
+special-cased ending at all. `breath.cpp`'s release branch is now noticeably
+SHORTER than either previous attempt — one shape, no phase transition.
+
+Measured: 5.1dB/100ms near the start of a full-peak release, 4.2dB/100ms near
+the end — genuinely close to constant, which is what `test_no_plateau_near_silence()`'s
+new rate-comparison assertion checks for directly, rather than inferring
+smoothness from the absence of a plateau alone.
+
+### Switch UP: session parameters, not portamento toggle
+
+> "Switch in up position can take on new role, as it can't be used for
+> portamento now. Switch up is going to be used, in conjunction with buttons
+> to set portamento time, overall vibrato, timbre, etc. Pressing A,B,C,D and
+> moving main knob to a position will set this parameter. NOTE THOUGH
+> entering this state will already have a button being 'pressed' — this
+> should be ignored until the NEXT press."
+
+Portamento's on/off toggle is gone. Every held note glides on a fingering
+change now; how fast is a session parameter (param A), continuously variable
+from near-instant to over a second — the old fixed `kGlideShift = 5` is now
+just the default.
+
+**UP is a third STABLE switch position**, not a flick-and-release toggle —
+the same kind of thing DOWN already is for playing. This is deliberately NOT
+the "switch position held while playing carries a gesture" mistake
+CLAUDE.md has warned about twice: those bugs came from layering a TIMED
+gesture on top of a position ALSO used for normal play (v2.0's held-legato-
+plus-staged-timer, and the old mute-plus-2-second-calibration-hold). UP does
+not overlay anything — it simply IS its own mode for as long as the switch
+sits there, exactly parallel to DOWN being its own mode. Nothing about it is
+timed.
+
+Four parameters, one per fingering button:
+
+- **A** — portamento glide time
+- **B** — overall vibrato depth, a multiplier on top of `VibratoFor()`'s
+  existing Main/X-driven depth (0 disables vibrato outright, 256/Q8 — the
+  default — is unchanged from pre-4.2, up to 384/Q8 for exaggeration)
+- **C** — wavefold amount, the same shape of multiplier on top of `FoldFor()`
+- **D** — reserved; a genuine no-op, kept for a future reverb/delay send
+
+**The "ignore what's already pressed" requirement** is handled by
+`ReadSwitch()`: the rising edge into UP clears `paramSel_` and `paramArmed_`,
+and `ParamTick()` only arms on the very next SETTLED change to a fresh single
+(A/B/C/D) — pairs, triples and the quad don't select anything, since they
+aren't one of the four parameters. A finger already down when you flick up
+does nothing until you lift it and press again.
+
+**Playing continues underneath, deliberately asymmetric.** A note already
+releasing keeps fading out exactly as it would anywhere else — `breath_.Tick()`
+always runs, and Main not being read for `SetKnob()` while in this mode simply
+means the release-trim (see v4.1.0) continues using whatever Main position was
+last real, rather than being hijacked by whatever the player is dialling in.
+But switch DOWN and Pulse In 1 are both forced low while UP is held, so no NEW
+note can strike — requested directly: "Gestures and presses are only
+affecting parameters though." One asymmetry, cleanly stated: existing sound
+is untouched, new sound is blocked, fingering changes select a parameter
+instead of moving a pitch.
+
+LEDs 0–3 mirror the selected parameter's button position (dark until one is
+pressed); LEDs 4/5 form a coarse two-step bar for its value, replacing the old
+portamento-indicator use of LED 4, which no longer has anything to indicate
+now that portamento has no on/off.
+
+---
+
 ## v4.1.0 — Main plays the release too, and a dying note stops re-fingering
 
 > "Need release (after switch released) the decay phase to ramp down slower

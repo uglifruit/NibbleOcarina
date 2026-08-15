@@ -13,7 +13,6 @@ void Breath::Init()
 	peak_ = effort_ = env_ = mainRaw_ = 0;
 	gate_ = struck_ = false;
 	attack_ = kAttackShiftFast;
-	tailStep_ = tailTicksLeft_ = 0;
 	vibCents_ = vibRateQ8_ = vibCentsMax_ = 0;
 	vibPhase_ = 0;
 }
@@ -108,11 +107,13 @@ void Breath::Tick()
 	// Attack and release are both one-pole, which gives the exponential shape
 	// an ear expects and costs a shift and a subtract.
 	//
-	// The accumulator carries kEnvFrac extra bits. Without them
-	// `v -= (v >> shift)` STALLS: once `v >> shift` rounds to zero the decay
-	// stops dead, capping the release length regardless of the shift. NIBBLE
-	// hit exactly this and every setting past shift 11 decayed in the same
-	// 43ms.
+	// The accumulator carries kEnvFrac extra bits. Without ANY, `v -= (v >>
+	// shift)` STALLS: once `v >> shift` rounds to zero the decay stops dead,
+	// capping the release length regardless of the shift. NIBBLE hit exactly
+	// this and every setting past shift 11 decayed in the same 43ms. But too
+	// MANY reintroduces a different fault: see kEnvFrac's comment in breath.h
+	// for the two prior attempts at shaping the release ending that made it
+	// worse rather than better, and why the actual fix needed neither.
 	const int32_t target = peak_ << kEnvFrac;
 
 	if (gate_)
@@ -126,7 +127,6 @@ void Breath::Tick()
 			if (step == 0) step = 1;      // never stall short of the target
 			env_ += step;
 			if (env_ > target) env_ = target;
-			tailTicksLeft_ = 0;   // a fresh climb cancels any leftover tail
 		}
 		else if (env_ > target)
 		{
@@ -137,75 +137,35 @@ void Breath::Tick()
 			if (step == 0) step = 1;
 			env_ -= step;
 			if (env_ < target) env_ = target;
-			tailTicksLeft_ = 0;
 		}
 	}
 	else if (env_ > 0)
 	{
-		const int32_t lvl = env_ >> kEnvFrac;
-
-		// MAIN'S SECOND JOB: once the gate has fallen, its peak-setting job is
-		// done — the peak already shaped the note — so the same physical
-		// position now TRIMS the release, live, every tick. Fully CW leaves
-		// the peak-coupled length untouched; turning CCW shortens it, all the
-		// way to a near-instant truncate. It can only shorten, never lengthen
-		// past what the peak already earned — see kReleaseTrimShift.
+		// RELEASE. ONE shape, exponential, start to finish: constant
+		// percentage loss per tick is constant dB per unit time, which is
+		// what a fade actually is. No separate "ease" and no final ramp — see
+		// kEnvFrac in breath.h for why both of those were tried and both made
+		// the ending worse rather than better.
+		//
+		// BASE rate comes from the note's own peak — loud notes ring on, quiet
+		// ones are short, which is what makes Main feel like dynamics while it
+		// is setting peak (kReleaseShiftMin/Max). MAIN'S SECOND JOB: once the
+		// gate has fallen, that peak-setting job is done, so the same physical
+		// position now TRIMS this rate live, every tick, on top — fully CW
+		// leaves it untouched, CCW shortens it toward a truncate. See
+		// kReleaseTrimShift.
 		const uint8_t trim = static_cast<uint8_t>(
 			(kReleaseTrimShift * (4096 - mainRaw_)) >> 12);
-
-		if (tailTicksLeft_ > 0 || lvl <= kEaseLevel1)
-		{
-			// THE FINAL RAMP — linear, not exponential, and sized in ticks
-			// rather than in a shift.
-			//
-			// An exponential's per-tick step is a fraction of the REMAINING
-			// value, so once the remainder is only a few LevelQ12() counts the
-			// step rounds to less than one count and the audible output holds
-			// perfectly flat for many ticks before finally snapping to zero —
-			// a plateau then a cliff, which reads as stopping rather than
-			// fading. See kEaseLevel1's comment.
-			//
-			// tailStep_ is recomputed from the CURRENT level whenever the
-			// remaining tick count would give a longer ramp than the trimmed
-			// length wants — i.e. on first entry, and again if Main is turned
-			// further CCW mid-ramp. It is never recomputed merely because env_
-			// has moved; that would reconstruct the exponential's own bug one
-			// level down. Recomputing against a knob change is safe because it
-			// is still a FIXED step for however many ticks remain, not a
-			// fraction of a shrinking remainder.
-			int32_t ticks = kEaseTailTicks >> trim;
-			if (ticks < 1) ticks = 1;
-			if (tailTicksLeft_ == 0 || tailTicksLeft_ > ticks)
-			{
-				tailStep_ = (lvl << kEnvFrac) / ticks;
-				if (tailStep_ == 0) tailStep_ = 1;
-				tailTicksLeft_ = ticks;
-			}
-			env_ -= tailStep_;
-			if (--tailTicksLeft_ <= 0 || env_ < (kEnvFloor << kEnvFrac))
-			{
-				env_ = 0;
-				tailTicksLeft_ = 0;
-			}
-		}
-		else
-		{
-			// RELEASE proper: its BASE rate comes from the note's own peak —
-			// loud notes ring on, quiet ones are short, which is what makes
-			// the knob feel like dynamics while it is setting peak. `trim`
-			// then shortens that live, on top, while the gate is up. This
-			// runs exponentially down to kEaseLevel1, where the ramp above
-			// takes over for a shaped, audible ending.
-			uint8_t rel = static_cast<uint8_t>(
-				kReleaseShiftMin +
-				(((kReleaseShiftMax - kReleaseShiftMin) * peak_) >> 12));
-			rel = (rel > trim + kReleaseShiftFloor)
-			          ? static_cast<uint8_t>(rel - trim)
-			          : kReleaseShiftFloor;
-			int32_t step = env_ >> rel;
-			if (step == 0) step = 1;
-			env_ -= step;
-		}
+		uint8_t rel = static_cast<uint8_t>(
+			kReleaseShiftMin +
+			(((kReleaseShiftMax - kReleaseShiftMin) * peak_) >> 12));
+		rel = (rel > trim + kReleaseShiftFloor)
+		          ? static_cast<uint8_t>(rel - trim)
+		          : kReleaseShiftFloor;
+		int32_t step = env_ >> rel;
+		if (step == 0) step = 1;
+		env_ -= step;
+		if (env_ < (kEnvFloor << kEnvFrac)) env_ = 0;
 	}
 
 	// --- vibrato ---------------------------------------------------------

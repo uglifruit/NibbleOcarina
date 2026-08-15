@@ -106,33 +106,6 @@ constexpr uint8_t kReleaseShiftMax = 10;
 constexpr uint8_t kReleaseTrimShift = 5;   ///< max shift REMOVED at Main == 0
 constexpr uint8_t kReleaseShiftFloor = 2;  ///< fastest possible release, ~1ms
 
-/// Where the release EASES OFF, as output levels.
-///
-/// A plain exponential decays at a constant rate in dB — which is a straight
-/// line, forever. It has no ending: it simply gets quieter at the same speed
-/// until the arithmetic runs out, and that is heard as a note that FINISHES
-/// rather than fades. Reported from hardware twice, the second time as "I am
-/// still hearing notes finish".
-///
-/// Below kEaseLevel1 the release stops being exponential in `env_` at all and
-/// becomes a LINEAR ramp in the audible output (LevelQ12()) down to zero over
-/// kEaseTailTicks. This second attempt replaced a first one that slowed the
-/// exponential further (a bigger shift) instead of changing its shape — that
-/// looked right in the accumulator but was invisible at the ear, because
-/// LevelQ12() is env_ >> kEnvFrac and a slowed-further exponential's per-tick
-/// step becomes SMALLER than one count of that shifted-down output. The
-/// result was silent to the ear: the last ~19 audible levels each held dead
-/// flat for 43-85ms and then the last one, level 1, snapped straight to zero
-/// — a plateau followed by a cliff, which is exactly "stopping", not fading.
-/// A linear ramp guarantees every one of the last few audible steps is the
-/// same size and the final step is no bigger than the others.
-constexpr int32_t kEaseLevel1 = 32;      ///< below this, switch to a linear ramp
-constexpr int32_t kEaseTailTicks = 96;   ///< ticks to cross kEaseLevel1 -> 0 at
-                                          ///< full length (Main CW), ~32ms.
-                                          ///< Scaled down with the rest of the
-                                          ///< release when Main trims it — see
-                                          ///< kReleaseTrimShift.
-
 /// Where the envelope is considered finished and is snapped to zero.
 ///
 /// A one-pole approaches zero asymptotically and would otherwise run forever,
@@ -147,19 +120,42 @@ constexpr int32_t kEaseTailTicks = 96;   ///< ticks to cross kEaseLevel1 -> 0 at
 /// The right floor is one step below what the DAC can render. Output is 12-bit
 /// and LevelQ12() shifts the accumulator down by kEnvFrac, so the last audible
 /// level is env == (1 << kEnvFrac). Cutting there means the envelope runs
-/// exactly as long as it is audible and not one tick longer — the tail plays
-/// out in full, and the ~85ms it used to spend counting down below audibility
-/// (with the gate still high) is gone too.
+/// exactly as long as it is audible and not one tick longer.
 constexpr int32_t kEnvFloor = 1;
 
 /// Extra fractional bits carried in the envelope accumulator.
 ///
-/// Without these `v -= (v >> shift)` stalls: once `v >> shift` rounds to zero
-/// the decay stops dead, which caps the achievable release length regardless
-/// of the shift. NIBBLE hit exactly this and every setting past shift 11
-/// decayed in the same 43ms. Eight extra bits push the stall far below the
-/// audible floor.
-constexpr int kEnvFrac = 8;
+/// Without ANY extra bits, `v -= (v >> shift)` STALLS: once `v >> shift`
+/// rounds to zero the decay stops dead, which caps the achievable release
+/// length regardless of the shift. NIBBLE hit exactly this and every setting
+/// past shift 11 decayed in the same 43ms.
+///
+/// But too MANY extra bits reintroduces a different fault, found twice on
+/// this card. LevelQ12() — what the ear and the VCA actually hear — is
+/// env_ >> kEnvFrac, a 12-bit integer, and near the floor the exponential's
+/// per-tick step in env_ becomes smaller than one whole LevelQ12() count. The
+/// audible output then holds perfectly flat for `(1 << kEnvFrac)` ticks before
+/// dropping by one count, and at kEnvFrac = 8 that plateau is 85ms on the last
+/// few audible levels — inaudible in a coarse dB-per-200ms measurement, but a
+/// held-then-cliff shape at the ear, reported twice: "the decay to silence is
+/// always too abrupt", and again, after a v4.0.2 attempt that slowed the
+/// exponential further instead of shortening this plateau, "still VERY
+/// AUDIBLY stopping". A separate v4.0.3 "final linear ramp" patched the
+/// symptom but concentrated 40+dB of perceived loudness into its last ~60ms
+/// (a ramp linear in raw amplitude is nowhere near linear in the dB the ear
+/// actually tracks) and simply moved the cliff later — "notes are STILL
+/// ending very very audibly".
+///
+/// The actual fix needs no ramp and no easing at all: the worst-case plateau
+/// at the bottom of a pure exponential is `(1 << kEnvFrac) / kCtrlRate`
+/// seconds, independent of the release shift, so it is set directly by
+/// kEnvFrac. 4 gives a ~5ms worst-case hold — well under audible-as-a-step —
+/// while still comfortably avoiding the original stall (verified across the
+/// full kReleaseShiftMin..kReleaseShiftMax + kReleaseTrimShift range in
+/// tools/breathsim.py). The release is ONE shape, exponential, start to
+/// finish: constant percentage loss per tick is constant dB per unit time,
+/// which is what a fade actually is.
+constexpr int kEnvFrac = 4;
 
 // ---------------------------------------------------------------------------
 // Vibrato
@@ -178,14 +174,11 @@ constexpr uint32_t kVibHzToIncQ16 = 366503876u;
 // ---------------------------------------------------------------------------
 // Portamento
 // ---------------------------------------------------------------------------
-
-/// Glide rate, as a slew shift. Smaller is FASTER.
-///
-/// 5 is about 70ms between adjacent notes — quick enough to read as an
-/// articulation rather than an effect. It was 9 (over a second across a wide
-/// interval), which on a struck instrument meant the glide was still arriving
-/// when the note had already decayed.
-constexpr uint8_t kGlideShift = 5;
+//
+// The glide shift itself is no longer a fixed constant here — it is a session
+// parameter set from the switch-UP mode (kGlideShiftMin/Max/Default, in
+// ocarina.h) and lives in main.cpp alongside the other three. Every held note
+// glides on a fingering change now; there is no on/off, only how fast.
 
 // ---------------------------------------------------------------------------
 
@@ -261,13 +254,6 @@ private:
 	bool     gate_    = false;
 	bool     struck_  = false;
 	uint8_t  attack_  = kAttackShiftFast;
-
-	/// State of the final linear ramp. tailStep_ is 0 when not in the ramp;
-	/// both are set ONCE, the tick the envelope first drops below
-	/// kEaseLevel1, from the level at that instant — never recomputed against
-	/// the shrinking remainder, or it would just be another exponential.
-	int32_t  tailStep_      = 0;   ///< env_ units subtracted per tick, fixed
-	int32_t  tailTicksLeft_ = 0;
 
 	int32_t  vibCents_    = 0;
 	int32_t  vibRateQ8_   = 0;

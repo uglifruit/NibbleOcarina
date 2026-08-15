@@ -278,4 +278,42 @@ constexpr uint16_t kLedFull = 4095;
 constexpr uint16_t kLedDim  = 700;
 constexpr uint16_t kLedGlow = 180;
 
+// ---------------------------------------------------------------------------
+// Session parameters — switch UP
+// ---------------------------------------------------------------------------
+//
+// Switch UP is a third stable position, not a flicked gesture — the same
+// kind of thing DOWN already is for playing. Press a button (A/B/C/D) to
+// select a parameter, then turn Main to set its value; the value is held for
+// the session (RAM only, like tuning) once set. This is not the "switch
+// position held while playing carries a gesture" mistake CLAUDE.md warns
+// about: UP does not overlay a gesture on top of normal play, it is its own
+// mode, exactly as DOWN already is.
+//
+// A / kParamGlide     portamento glide time (always on; low end ~ instant)
+// B / kParamVibrato    vibrato depth multiplier, on top of VibratoFor()
+// C / kParamFold       wavefold multiplier, on top of FoldFor()
+// D / kParamReserved   no-op — a slot for a future reverb/delay send
+
+/// Portamento's own on/off toggle is gone: every held note now glides on a
+/// fingering change, and this range is how slow-to-instant that glide is.
+/// kGlideShiftDefault matches the fixed value v4.1 shipped with.
+constexpr uint8_t kGlideShiftMin     = 1;   ///< fastest — near-instant
+constexpr uint8_t kGlideShiftMax     = 9;   ///< slowest — over a second
+constexpr uint8_t kGlideShiftDefault = 5;   ///< ~70ms, the old fixed value
+
+/// Vibrato depth multiplier, Q8 (256 == 100%, i.e. unchanged from today).
+/// 0 disables vibrato outright regardless of Main/X; the top end is a
+/// deliberate exaggeration, not just "the same, capped".
+constexpr int32_t kVibMulQ8Min     = 0;
+constexpr int32_t kVibMulQ8Max     = 384;   ///< 150%
+constexpr int32_t kVibMulQ8Default = 256;   ///< 100% — matches pre-4.2 behaviour
+
+/// Wavefold multiplier, Q8, same shape as the vibrato multiplier: 0 keeps
+/// Audio Out 2 a plain sine regardless of X, 256 is unchanged, and the top
+/// end raises the ceiling above kFoldMax a little rather than just gating it.
+constexpr int32_t kFoldMulQ8Min     = 0;
+constexpr int32_t kFoldMulQ8Max     = 384;
+constexpr int32_t kFoldMulQ8Default = 256;
+
 } // namespace nib

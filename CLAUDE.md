@@ -128,29 +128,31 @@ and was clearly audible as the decay "cutting off". The last audible level is
 `1 << kEnvFrac`; anything above that removes tail the hardware could still
 render, anything below just holds the gate high in silence.
 
-**A one-pole release is a straight line in dB, and that reads as "stopping"
-not "fading."** Fixing the floor (above) was not enough — the decay still
-sounded like it finished rather than eased away.
+**The release is ONE exponential shape, start to finish — no ease, no ramp,
+no special-cased ending.** Two earlier attempts tried to fix "notes sound
+like they stop" by changing the SHAPE of the last stretch (a slower shift
+below a threshold, then a separate linear ramp) and both made it audibly
+worse, because both were treating the symptom. `kEaseLevel1`/`kEaseTailTicks`
+are gone.
 
-**Slowing an exponential's shift near zero does not make it audible — it
-makes it invisible.** The first attempt at the above added extra shift below
-two low thresholds, verified by a model that measured `env_`'s dB-per-200ms
-rate and saw it fall. But `LevelQ12()` is `env_ >> kEnvFrac`, a 12-bit
-integer, and an exponential's step is a fraction of the *remaining* value —
-so slowing the shift only postpones the point where that step rounds to under
-one output count, it does not prevent it. Traced sample-by-sample: the last
-nineteen audible levels each held dead flat for 43–85ms and then the last one
-dropped straight to zero. A held plateau then a cliff is not a fade, and the
-model's 200ms-wide dB windows were coarse enough to average the plateau away
-without ever seeing it — a lesson in measuring the accumulator instead of the
-loudspeaker. **Fix:** below `kEaseLevel1` (32) the release stops being
-exponential and becomes a **linear** ramp, `kEaseTailTicks` (96, ≈32ms) long,
-with the step size fixed once on entry from the level at that instant — never
-recomputed against the shrinking remainder, or it reconstructs the same bug
-one level down. `breathsim.py`'s `test_the_tail_eases_off()` walks the tail
-sample-by-sample and asserts no held level lasts more than ~40ms near the end
-and the last few counts step down by exactly one each — not a dB-rate average,
-because that is what let the plateau through the first time.
+A plain one-pole IS a correct fade: constant percentage loss per tick is
+constant dB per unit time, which is what fading means. The actual defect,
+present since v4.0.1, was a plateau-then-cliff at the very bottom:
+`LevelQ12()` is `env_ >> kEnvFrac`, a 12-bit integer, and once the
+exponential's per-tick step in `env_` drops below one whole `LevelQ12()`
+count, the audible output holds flat for `(1 << kEnvFrac)` ticks before
+dropping by one — a plateau, not a fade, however slow you make the shift
+approaching it. The linear-ramp attempt fixed the plateau but was linear in
+raw AMPLITUDE, not the dB the ear actually tracks, which compressed 40+dB of
+perceived loudness into its last ~60ms and simply moved the cliff later —
+reported as "notes are STILL ending very very audibly" even at the untrimmed
+full length. The real lever was `kEnvFrac` itself, which sets that plateau's
+length directly (`(1 << kEnvFrac) / kCtrlRate` seconds, independent of the
+release shift): dropped from 8 to 4, worst-case plateau anywhere in the tail
+is ~5ms. `breathsim.py`'s `test_no_plateau_near_silence()` checks the actual
+per-level hold times AND that the dB/time rate stays close to constant from
+the start of the tail to the end — not a coarse average, which is exactly
+what let both prior plateaus through undetected.
 
 **The oscillator's phase is parked at zero while silent.** Letting it free-run
 puts a step of up to full scale on the first sample of every attack — measured
@@ -188,11 +190,28 @@ changed silently (no further settled event) during the tail — handled by
 tracking the gate's own rising edge and calling `NoteOn(levels_.Current())`
 on it directly, since `Current()` stays live regardless of the freeze.
 
-**No switch position that is held while playing may carry a gesture.** This has
-now cost two bugs: switch-up as a held legato mode with a staged timer on it
-(v2.0, dropped the card into tune mode mid-slur), and switch-down as both mute
-and a 2-second calibration hold. Up is a TOGGLE you flick; down is the bow;
-calibration has no gesture at all and runs only at boot.
+**Switch UP is session-parameter editing, a third stable mode alongside
+DOWN.** Press A/B/C/D, turn Main to set that parameter (A glide time, B
+vibrato depth multiplier, C wavefold multiplier, D reserved) — values persist
+for the session, RAM only, like tuning. Portamento's old on/off toggle is
+gone; every held note glides now, and param A is how fast. Entering UP
+disarms selection so whatever fingering is already held is ignored; only the
+NEXT settled change to a fresh single arms it — requested directly:
+"entering this state will already have a button being 'pressed', this should
+be ignored until the NEXT press." A note already releasing keeps fading out
+untouched (`breath_.Tick()` always runs); switch DOWN and Pulse In 1 are both
+forced low here so nothing NEW can strike while adjusting.
+
+**No switch position that is held may carry a TIMED gesture layered on top of
+normal play.** This has now cost two bugs: switch-up as a held legato mode
+with a staged 1s/3s timer on it (v2.0, dropped the card into tune mode
+mid-slur), and switch-down as both mute and a 2-second calibration hold. The
+fix both times was the same: don't overlay a timer on a position also used
+for playing. It does NOT mean a switch position can never be held — DOWN is
+held for as long as a note sustains, and UP (since v4.2.0) is held for as
+long as you're editing session parameters. Both are simply their OWN mode for
+the duration, untimed, with nothing else competing for that position.
+Calibration has no gesture at all and runs only at boot.
 
 **Time constants: a one-pole reaches 90% in ~2.3 tau, not 6.9.** 6.9 is the time
 to -60dB, which is the right measure for a RELEASE and the wrong one for an
@@ -258,10 +277,12 @@ makes the top half of the knob dead, because level has already flattened there.
 Using effort where level belongs makes the knob feel unresponsive, which is
 exactly what hardware reported of v2.0's squared curve.
 
-**Switch UP carries no gesture, and must not.** It is legato — a position held
-while playing. v2.0 hung a staged 1s/3s hold on it, so a three-second slur
-dropped the card into tune mode with no way out (tune exited on a tap, and a tap
-is switch DOWN). Momentary positions can carry gestures; held ones cannot.
+**Switch UP carries no TIMED gesture, and must not.** v2.0 hung a staged
+1s/3s hold on it as a legato mode, so a three-second slur dropped the card
+into tune mode with no way out. Since v4.2.0 UP is session-parameter editing
+— itself a held, untimed mode, not a gesture layered on playing — see the
+`kEnvFrac`-adjacent rule above for why that distinction is fine. What must
+never come back is a STAGED timer on any switch position.
 
 **Tuning runs concurrently with calibration**, because the two use disjoint
 controls: calibration reads CV In 1 and the switch, tuning reads Y and Main. The

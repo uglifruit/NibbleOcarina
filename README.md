@@ -48,10 +48,10 @@ knob** — hold the switch down for two seconds.
 | **Audio In 1** | offsets the Main knob *(used as CV)* |
 | **Audio In 2** | offsets the X knob *(used as CV)* |
 | **Pulse In 1** | the bow, same as the switch: gate high sounds a note |
-| **Main** | held: note peak, then vibrato · released: trims the release live *(fine tune while calibrating)* |
+| **Main** | held: note peak, then vibrato · released: trims the release live · **switch ↑**: sets the selected session parameter *(fine tune while calibrating)* |
 | **X** | attack shape, vibrato character, wavefold *(octave while calibrating)* |
 | **Y** | scale *(coarse tune while calibrating)* |
-| **Switch ↑** | flick to toggle portamento — shown on LED 4 |
+| **Switch ↑** | **session parameters** — press A/B/C/D, turn Main to set it |
 | **Switch —** | rest — the card is silent here |
 | **Switch ↓** | **the bow** — tap to strike, hold to sustain |
 | **Audio Out 1** | the tone, a sine |
@@ -65,10 +65,12 @@ knob** — hold the switch down for two seconds.
 
 **There are none.** Calibration runs once at power-on; reset to get back to it.
 
-Both switch positions are playing controls — down is the bow, up toggles
-portamento — and a position you use while playing cannot also carry a timer
-without firing mid-phrase. That mistake cost two separate bugs; see
-`docs/DEVLOG.md`.
+The switch has three STABLE positions now, not two-plus-a-flick: down is the
+bow, up is session parameters, and neither is a timed hold layered on top of
+the other — each is simply its own mode for as long as you sit in it. The
+earlier rule this card learned twice — a position you use *while playing*
+cannot also carry a separate timed gesture — doesn't apply here, because up
+was never a playing position to begin with; see `docs/DEVLOG.md`.
 
 ---
 
@@ -112,12 +114,13 @@ or eases under your hand.
 **The instant you release, Main's job changes.** It stops setting peak — the
 note has already been given its shape — and starts **trimming the release**,
 live, for as long as the tail is still sounding. Leave the knob where it was
-(or turn it up) and the note rings out for the length its peak earned. Turn it
-down during the tail and the release shortens as you turn it, all the way to a
-near-instant cutoff — a way to choke a note off without touching the switch,
-and it works on a tail that's already ringing, not just a position chosen in
-advance. It can only shorten what the peak bought, never stretch a note out
-past its own length.
+(or turn it up) and the note rings out for the length its peak earned, fading
+smoothly the whole way down — one continuous taper, no held step and no
+audible "ending" tacked on near the bottom. Turn it down during the tail and
+the release shortens as you turn it, all the way to a near-instant cutoff — a
+way to choke a note off without touching the switch, and it works on a tail
+that's already ringing, not just a position chosen in advance. It can only
+shorten what the peak bought, never stretch a note out past its own length.
 
 **X chooses the attack and the vibrato together:**
 
@@ -134,6 +137,40 @@ tilts the level up slightly.
 **The three audio outputs are one oscillator.** Audio 1 is its sine, Audio 2 the
 same wave folded, Pulse 2 the same wave squared — all at identical pitch and
 phase, so they mix without comb filtering and the square always lines up.
+
+---
+
+## Session parameters
+
+**Switch up is a third stable position**, held for as long as you're in it —
+not a flick, not a timed gesture. Press one of the fingering buttons and turn
+Main to set what it controls:
+
+| Button | Parameter |
+|---|---|
+| A | portamento glide time |
+| B | overall vibrato depth |
+| C | wavefold amount |
+| D | *(reserved)* |
+
+Values stick for the session, the same way tuning does. LEDs 0–3 mirror the
+button you pressed so you can see which parameter is live; LEDs 4 and 5 form a
+coarse two-step bar for its value as you turn Main.
+
+**Whatever is under your fingers when you arrive here is ignored.** The
+selection only updates on the *next* press — so flicking up mid-phrase, with a
+note still fingered, can't silently set a parameter to whatever you happened
+to be holding.
+
+**Playing carries on underneath.** A note already releasing keeps fading out
+exactly as it would anywhere else — this mode only intercepts the buttons and
+Main, not the envelope. Switch down and Pulse In 1 are both ignored while
+you're up here, so nothing new can strike while you're mid-adjustment.
+
+**Portamento no longer has an on/off.** Every held note glides on a fingering
+change now; param A is how long that takes, from close to instant at one end
+to over a second at the other. Turning it all the way down is what "off" used
+to mean.
 
 ---
 

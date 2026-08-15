@@ -21,7 +21,12 @@
 //   X            attack shape + vibrato character + fold  (OCTAVE during cal)
 //   Y            scale                       (COARSE TUNE during calibration)
 //
-//   Switch UP    toggle portamento on/off (shown on LED 4), then let go
+//   Switch UP    SESSION PARAMETERS. Press A/B/C/D then turn Main to set:
+//                  A portamento glide time   B vibrato depth
+//                  C wavefold amount         D reserved
+//                Held (not momentary), a third stable position alongside
+//                DOWN — see ParamTick(). A note already releasing keeps
+//                ringing; nothing here re-fingers or re-strikes it.
 //   Switch MID   rest position
 //   Switch DOWN  THE BOW — tap for a struck note, hold to sustain
 //
@@ -33,7 +38,8 @@
 // THE INSTRUMENT IS BOWED. It is silent until the switch is held or Pulse In 1
 // goes high. A tap is a struck note; a hold sustains for as long as you hold
 // it. While held, moving Main swells the note and changing the fingering
-// glides to the new pitch without re-attacking.
+// glides to the new pitch without re-attacking — every held note glides now,
+// at whatever speed session parameter A sets; there is no separate toggle.
 //
 //   Audio Out 1  the tone, a sine
 //   Audio Out 2  the same tone, wavefolded as X rises
@@ -255,6 +261,8 @@ private:
 
 		// --- Play ----------------------------------------------------------
 
+		const bool editingParams = (SwitchVal() == Switch::Up);
+
 		// THE BOW. Either source sounds the instrument, and they behave
 		// identically: a short press is a struck note, a long one sustains.
 		// So a sequencer gate plays the card exactly as a finger does.
@@ -262,36 +270,56 @@ private:
 		// gateLatched_ swallows a switch that was already held at boot, so the
 		// card cannot fire a note on the release of a switch nobody pressed.
 		//
+		// Forced false while editing params: UP is its own mode, and presses
+		// there select a parameter rather than sounding a note. A note already
+		// releasing keeps ringing regardless — see breath_.Tick() below, which
+		// always runs — this only stops NEW strikes.
+		//
 		// Computed before the fingering is read, so NoteOn() below can tell
 		// whether a settled change happened while held or while releasing.
-		bool gate = (SwitchVal() == Switch::Down) || PulseIn1();
+		bool gate = !editingParams &&
+		            ((SwitchVal() == Switch::Down) || PulseIn1());
 		if (gateLatched_)
 		{
 			if (!gate) gateLatched_ = false;   // released; arm normally
 			gate = false;
 		}
 
-		// A settled fingering change only becomes a NOTE while the bow is
-		// down. During the release tail it is READ (levels_ keeps tracking,
-		// so the very next strike is instant rather than one tick stale) but
-		// not ACTED on: the pitch stays exactly where the bow left it for the
-		// whole tail, however the fingers move underneath it. Re-fingering a
-		// dying note would be a glide nobody asked for and a pitch that
-		// doesn't match what was struck — a held note re-fingers because a
-		// bowed string does; a released one is already committed to the note
-		// it was given.
+		// levels_ keeps tracking regardless of mode, so nothing here is ever
+		// one tick stale when the player leaves either UP or a release tail.
 		int8_t idx = kComboNone;
 		const bool settled = (levels_.Step(CVIn1(), idx) == LevelEvent::Trigger);
-		if (settled && gate) NoteOn(idx);
 
-		// A fresh strike ARRIVING during a release tail must pick up whatever
-		// is under the fingers RIGHT NOW, not the frozen note the tail was
-		// still playing — otherwise a re-strike after a silent re-fingering
-		// (no settled event fires because the fingering already changed once,
-		// mid-tail, before this rising edge) would attack the stale pitch.
-		// levels_.Current() is always live, freeze or no freeze, so the edge
-		// alone is enough to resync.
-		if (gate && !gateLast_) NoteOn(levels_.Current());
+		if (editingParams)
+		{
+			// Buttons select a PARAMETER here, not a pitch — see ParamTick().
+			// combo_/pitch are untouched, exactly as during a release tail:
+			// whatever is sounding keeps sounding at its own note.
+			ParamTick(settled, idx);
+		}
+		else
+		{
+			// A settled fingering change only becomes a NOTE while the bow is
+			// down. During the release tail it is READ (levels_ keeps
+			// tracking, so the very next strike is instant rather than one
+			// tick stale) but not ACTED on: the pitch stays exactly where the
+			// bow left it for the whole tail, however the fingers move
+			// underneath it. Re-fingering a dying note would be a glide
+			// nobody asked for and a pitch that doesn't match what was struck
+			// — a held note re-fingers because a bowed string does; a
+			// released one is already committed to the note it was given.
+			if (settled && gate) NoteOn(idx);
+
+			// A fresh strike ARRIVING during a release tail must pick up
+			// whatever is under the fingers RIGHT NOW, not the frozen note
+			// the tail was still playing — otherwise a re-strike after a
+			// silent re-fingering (no settled event fires because the
+			// fingering already changed once, mid-tail, before this rising
+			// edge) would attack the stale pitch. levels_.Current() is always
+			// live, freeze or no freeze, so the edge alone is enough to
+			// resync.
+			if (gate && !gateLast_) NoteOn(levels_.Current());
+		}
 		gateLast_ = gate;
 
 		// The two knobs, each offset by an audio input used as CV.
@@ -308,18 +336,30 @@ private:
 		if (xKnob > 4095) xKnob = 4095;
 		xNow_ = xKnob;
 
-		// Main is read every tick regardless of gate state — which of its two
-		// jobs (set peak, or trim the release) this position does is Breath's
-		// call, based on its own gate state. See breath.h.
-		breath_.SetKnob(KnobVal(Knob::Main), mainCv);
+		// While editing params, Main sets the selected parameter's value
+		// instead of breath's peak — the note already sounding (if any) is a
+		// release tail continuing on its own, untouched by Main here, exactly
+		// as Main during any other release trims what already exists rather
+		// than being read as a fresh peak. SetKnob() is simply not called.
+		if (!editingParams)
+		{
+			// Main is read every tick regardless of gate state — which of its
+			// two jobs (set peak, or trim the release) this position does is
+			// Breath's call, based on its own gate state. See breath.h.
+			breath_.SetKnob(KnobVal(Knob::Main), mainCv);
+		}
 		breath_.SetAttack(xNow_);
 
 		breath_.SetGate(gate);
 
 		// Vibrato comes from BOTH knobs: Main sets how much, X sets what kind.
 		// Set before Tick() so the oscillator advances with this tick's values.
+		// param B (vibMulQ8_) scales the depth ON TOP of that, session-wide —
+		// 0 silences vibrato outright regardless of Main/X, 256 (default) is
+		// unchanged from pre-4.2 behaviour.
 		const Vibrato vib = VibratoFor(breath_.EffortQ12(), xNow_);
-		breath_.SetVibrato(vib.rateQ8, vib.centsQ4);
+		const int32_t vibCentsQ4 = (vib.centsQ4 * vibMulQ8_) >> 8;
+		breath_.SetVibrato(vib.rateQ8, vibCentsQ4);
 
 		breath_.Tick();
 
@@ -337,7 +377,12 @@ private:
 		// whole note rather than just its start.
 		PulseOut1(breath_.Sounding());
 
-		voice_.SetFold(FoldFor(xNow_));
+		// param C (foldMulQ8_) scales the fold amount X asked for, same shape
+		// as the vibrato multiplier above — 0 keeps Audio Out 2 a plain sine
+		// regardless of X, 256 (default) is unchanged.
+		int32_t fold = (FoldFor(xNow_) * foldMulQ8_) >> 8;
+		if (fold < 0) fold = 0;
+		voice_.SetFold(fold);
 
 		ReadScale();
 		UpdatePitch();
@@ -358,26 +403,26 @@ private:
 	/// The scale root, as chosen by the X knob during calibration.
 	int32_t BaseNote() const { return kOctaveBase[octave_]; }
 
-	/// Switch UP toggles portamento, on the way UP only.
+	/// Switch UP is a third STABLE position — session parameter editing — not
+	/// a flicked gesture. This is deliberately not the "switch position held
+	/// while playing carries a gesture" mistake CLAUDE.md warns about twice
+	/// over: those bugs came from overlaying a timed gesture on a position
+	/// also used for normal play. UP overlays nothing; it IS its own mode,
+	/// the same way DOWN already is the bow.
 	///
-	/// A TOGGLE rather than a held mode, because up is a position you flick
-	/// through rather than one you play in: reaching it turns portamento on,
-	/// reaching it again turns it off, and LED 4 says which. Holding it does
-	/// nothing at all.
-	///
-	/// This is the third arrangement of this control and the first that does
-	/// not fight the player. v2.0 made UP a held legato mode AND hung a staged
-	/// 1s/3s gesture on it, so a three-second slur dropped the card into tune
-	/// mode with no way out. The rule that cost: a switch position you hold
-	/// while playing cannot also carry a gesture. Up is now momentary in
-	/// practice — flick and release.
+	/// Entering UP must ignore whatever fingering happens to be held already
+	/// — the player did not choose that combo for this purpose, it is just
+	/// wherever their fingers were. So the edge into UP disarms selection;
+	/// ControlTick()'s param-edit branch only arms on the NEXT settled change
+	/// to a fresh single (A/B/C/D).
 	void __not_in_flash_func(ReadSwitch)()
 	{
 		const bool up = (SwitchVal() == Switch::Up);
-		// Only while playing: during a calibration the switch is the capture
-		// tap and the up position is not being used, so a stray flick should
-		// not silently change a setting the player cannot see from there.
-		if (up && !upLast_ && ui_ == UiMode::Play) portamento_ = !portamento_;
+		if (up && !upLast_)
+		{
+			paramSel_   = kComboNone;
+			paramArmed_ = false;
+		}
 		upLast_ = up;
 
 		// The capture tap for calibration is the same switch, pressed. It fires
@@ -387,6 +432,53 @@ private:
 		const bool down = (SwitchVal() == Switch::Down);
 		tapped_ = (down && !downLast_);
 		downLast_ = down;
+	}
+
+	/// Switch-UP mode: buttons select a session parameter, Main sets it.
+	///
+	/// `settled`/`idx` are this tick's levels_.Step() result, already read by
+	/// ControlTick() — passed in rather than re-read, since Step() advances
+	/// state and must only run once per tick.
+	///
+	/// Entering UP disarms selection (see ReadSwitch()) so whatever fingering
+	/// happened to be held is ignored; this only arms on the FIRST settled
+	/// change afterward that lands on a fresh single (A/B/C/D). Pairs,
+	/// triples and the quad don't select anything — they aren't one of the
+	/// four parameters, so treating them as a selection would be a wrong
+	/// answer rather than simply an unused gesture.
+	void __not_in_flash_func(ParamTick)(bool settled, int8_t idx)
+	{
+		if (settled && idx >= kA && idx <= kD)
+		{
+			paramSel_   = idx;
+			paramArmed_ = true;
+		}
+
+		if (!paramArmed_ || paramSel_ == kComboNone) return;
+
+		int32_t knob = KnobVal(Knob::Main);
+		if (knob < 0) knob = 0;
+		if (knob > 4095) knob = 4095;
+
+		switch (paramSel_)
+		{
+		case kA:   // portamento glide time — CCW is fast, CW is slow, matching
+		           // every other "CCW = less/faster" convention on this card.
+			glideShift_ = static_cast<uint8_t>(kGlideShiftMin +
+				(((kGlideShiftMax - kGlideShiftMin) * knob) >> 12));
+			break;
+		case kB:   // vibrato depth multiplier
+			vibMulQ8_ = kVibMulQ8Min +
+				(((kVibMulQ8Max - kVibMulQ8Min) * knob) >> 12);
+			break;
+		case kC:   // wavefold multiplier
+			foldMulQ8_ = kFoldMulQ8Min +
+				(((kFoldMulQ8Max - kFoldMulQ8Min) * knob) >> 12);
+			break;
+		case kD:   // reserved — no-op
+		default:
+			break;
+		}
 	}
 
 	/// Sets the target pitch. Called from ControlTick() in two situations
@@ -427,7 +519,11 @@ private:
 	void __not_in_flash_func(UpdatePitch)()
 	{
 		const int32_t vibQ4 = breath_.VibratoCentsQ4();
-		const bool gliding = portamento_ && (glideSemiQ8_ != targetSemiQ8_);
+		// Portamento's on/off toggle is gone: every held note glides on a
+		// fingering change now, at whatever speed param A (glideShift_) sets
+		// — see ocarina.h. The low end is near-instant, which is what "off"
+		// used to mean.
+		const bool gliding = (glideSemiQ8_ != targetSemiQ8_);
 
 		// The glide has to keep stepping toward its target across many ticks,
 		// so "nothing changed" is not a reason to stop — it is the normal state
@@ -483,12 +579,14 @@ private:
 		const int32_t targetSemiQ8 = (semi << 8);
 		targetSemiQ8_ = targetSemiQ8;
 
-		if (portamento_ && glideSemiQ8_ != 0)
+		if (glideSemiQ8_ != 0)
 		{
 			// slew_exact and NOT slew: the plain shift stalls short of its
 			// target, which on a pitch is a permanent detune rather than a
-			// harmless approximation.
-			glideSemiQ8_ = slew_exact(glideSemiQ8_, targetSemiQ8, kGlideShift);
+			// harmless approximation. glideShift_ is param A — always glides
+			// now, from near-instant at the fast end to over a second at the
+			// slow end; there is no separate on/off any more.
+			glideSemiQ8_ = slew_exact(glideSemiQ8_, targetSemiQ8, glideShift_);
 		}
 		else
 		{
@@ -860,6 +958,12 @@ private:
 
 	void PlayLeds()
 	{
+		if (SwitchVal() == Switch::Up)
+		{
+			ParamLeds();
+			return;
+		}
+
 		if (scaleShow_ > 0)
 		{
 			scaleShow_--;
@@ -874,13 +978,59 @@ private:
 		// The fingering, mirrored on the block.
 		SetRow(ComboLedMask(levels_.Current()), kLedDim, 0);
 
-		// LED 4 is the PORTAMENTO indicator — the one thing about the card's
-		// state you cannot hear until you play the next note.
-		LedBrightness(4, portamento_ ? kLedDim : 0);
+		// LED 4 is free of the old portamento on/off indicator — portamento
+		// has no on/off any more, only a session-set time (param A, switch
+		// UP) — so it is simply dark here now.
+		LedBrightness(4, 0);
 
 		// LED 5 is a level meter, following the envelope, so the panel shows
 		// the note's shape as it rises and decays.
 		LedBrightness(5, static_cast<uint16_t>((level_ * kLedFull) >> 12));
+	}
+
+	/// Switch-UP display: LEDs 0-3 show which parameter is selected (solid at
+	/// the button's own position, matching the fingering block everywhere
+	/// else on this panel), LEDs 4/5 show its current value as a two-LED bar.
+	/// Nothing selected yet (paramArmed_ false) leaves 0-3 dark, since
+	/// showing a stale selection from before this entry would be a lie.
+	void ParamLeds()
+	{
+		SetRow((paramArmed_ && paramSel_ != kComboNone)
+		           ? ComboLedMask(paramSel_) : 0,
+		       kLedDim, 0);
+
+		if (!paramArmed_ || paramSel_ == kComboNone)
+		{
+			LedBrightness(4, 0);
+			LedBrightness(5, 0);
+			return;
+		}
+
+		// Value as a fraction of each parameter's own range, then as a
+		// two-LED bar — one lit, both lit, matching the coarse resolution a
+		// two-LED readout can actually offer.
+		int32_t frac;   // Q12, 0..4095
+		switch (paramSel_)
+		{
+		case kA:
+			frac = ((glideShift_ - kGlideShiftMin) << 12) /
+			       (kGlideShiftMax - kGlideShiftMin);
+			break;
+		case kB:
+			frac = ((vibMulQ8_ - kVibMulQ8Min) << 12) /
+			       (kVibMulQ8Max - kVibMulQ8Min);
+			break;
+		case kC:
+			frac = ((foldMulQ8_ - kFoldMulQ8Min) << 12) /
+			       (kFoldMulQ8Max - kFoldMulQ8Min);
+			break;
+		case kD:
+		default:
+			frac = 0;
+			break;
+		}
+		LedBrightness(4, (frac > 1365) ? kLedDim : 0);    // > 1/3
+		LedBrightness(5, (frac > 2730) ? kLedDim : 0);    // > 2/3
 	}
 
 	// -----------------------------------------------------------------------
@@ -907,9 +1057,20 @@ private:
 	bool    upLast_      = false;
 	bool    downLast_    = false;
 	bool    tapped_      = false;
-	bool    portamento_  = false;
 	bool    gateLatched_ = false;
 	bool    gateLast_    = false;   ///< for the re-strike pickup in ControlTick()
+
+	// --- session parameters, switch UP --------------------------------------
+	uint8_t glideShift_ = kGlideShiftDefault;   ///< param A
+	int32_t vibMulQ8_   = kVibMulQ8Default;     ///< param B
+	int32_t foldMulQ8_  = kFoldMulQ8Default;    ///< param C
+	// param D is reserved — no storage yet.
+
+	/// Which of A/B/C/D is selected in the switch-UP mode, or kComboNone.
+	int8_t paramSel_    = kComboNone;
+	/// Entering UP mode must ignore whatever is already held — see
+	/// ReadSwitch(). False until the NEXT settled change to a fresh single.
+	bool    paramArmed_ = false;
 
 	int32_t  level_      = 0;   ///< what the voice is given, after every offset
 	int32_t  xNow_       = 0;   ///< X knob after its CV offset

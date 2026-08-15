@@ -32,9 +32,7 @@ RELEASE_SHIFT_MAX = 10
 RELEASE_TRIM_SHIFT = 5
 RELEASE_SHIFT_FLOOR = 2
 ENV_FLOOR = 1
-EASE_LEVEL_1 = 32
-EASE_TAIL_TICKS = 96
-ENV_FRAC = 8
+ENV_FRAC = 4
 
 VIB_HZ_TO_INC_Q16 = 366503876
 GLIDE_SHIFT = 5
@@ -78,8 +76,6 @@ class Breath:
         self.vib_rate_q8 = 0
         self.vib_cents_max = 0
         self.vib_phase = 0
-        self.tail_step = 0
-        self.tail_ticks_left = 0
         self.main_raw = 0
 
     # -- inputs --------------------------------------------------------------
@@ -135,61 +131,34 @@ class Breath:
                 if step == 0:
                     step = 1
                 self.env = min(target, self.env + step)
-                self.tail_ticks_left = 0
             elif self.env > target:
                 d = self.env - target
                 step = d >> self.attack
                 if step == 0:
                     step = 1
                 self.env = max(target, self.env - step)
-                self.tail_ticks_left = 0
         elif self.env > 0:
-            lvl = self.env >> ENV_FRAC
-
-            # MAIN'S SECOND JOB: once the gate has fallen its peak-setting job
-            # is done, so the same physical position now TRIMS the release,
-            # live, every tick. Fully CW leaves the peak-coupled length
-            # untouched; CCW shortens it, all the way to a near-instant
-            # truncate. It can only shorten, never lengthen past what the
-            # peak already earned. See breath.h/kReleaseTrimShift.
+            # RELEASE. ONE shape, exponential, start to finish: constant
+            # percentage loss per tick is constant dB per unit time, which is
+            # what a fade actually is. No separate "ease" and no final ramp --
+            # see ENV_FRAC's comment in breath.h for why both were tried and
+            # both made the ending worse rather than better.
+            #
+            # BASE rate comes from the note's own peak -- loud notes ring on,
+            # quiet ones are short -- then Main's SECOND JOB trims that live,
+            # every tick, once the gate has fallen: fully CW leaves it
+            # untouched, CCW shortens it toward a truncate.
             trim = (RELEASE_TRIM_SHIFT * (4096 - self.main_raw)) >> 12
-
-            if self.tail_ticks_left > 0 or lvl <= EASE_LEVEL_1:
-                # THE FINAL RAMP -- linear, not exponential. An exponential's
-                # step is a fraction of the remainder, so once the remainder
-                # is only a few LevelQ12() counts the step rounds to less than
-                # one count and the audible output holds flat for many ticks
-                # before snapping to zero -- a plateau then a cliff. A linear
-                # ramp's step is fixed from the CURRENT level whenever the
-                # remaining ticks would give a longer ramp than the trimmed
-                # length wants -- on first entry, and again if Main is turned
-                # further CCW mid-ramp. Never recomputed merely because env
-                # has moved; that reconstructs the exponential's own bug one
-                # level down. See breath.cpp.
-                ticks = max(1, EASE_TAIL_TICKS >> trim)
-                if self.tail_ticks_left == 0 or self.tail_ticks_left > ticks:
-                    self.tail_step = (lvl << ENV_FRAC) // ticks
-                    if self.tail_step == 0:
-                        self.tail_step = 1
-                    self.tail_ticks_left = ticks
-                self.env -= self.tail_step
-                self.tail_ticks_left -= 1
-                if self.tail_ticks_left <= 0 or self.env < (ENV_FLOOR << ENV_FRAC):
-                    self.env = 0
-                    self.tail_ticks_left = 0
-            else:
-                # RELEASE proper, down to EASE_LEVEL_1 where the ramp above
-                # takes over. BASE rate comes from the note's own peak -- loud
-                # notes ring on, quiet ones are short -- then `trim` shortens
-                # that live, on top, while the gate is up.
-                rel = RELEASE_SHIFT_MIN + (
-                    ((RELEASE_SHIFT_MAX - RELEASE_SHIFT_MIN) * self.peak) >> 12)
-                rel = (rel - trim) if rel > trim + RELEASE_SHIFT_FLOOR \
-                    else RELEASE_SHIFT_FLOOR
-                step = self.env >> rel
-                if step == 0:
-                    step = 1
-                self.env -= step
+            rel = RELEASE_SHIFT_MIN + (
+                ((RELEASE_SHIFT_MAX - RELEASE_SHIFT_MIN) * self.peak) >> 12)
+            rel = (rel - trim) if rel > trim + RELEASE_SHIFT_FLOOR \
+                else RELEASE_SHIFT_FLOOR
+            step = self.env >> rel
+            if step == 0:
+                step = 1
+            self.env -= step
+            if self.env < (ENV_FLOOR << ENV_FRAC):
+                self.env = 0
 
         if self.vib_cents_max > 0 and self.env > 0:
             inc = (self.vib_rate_q8 * VIB_HZ_TO_INC_Q16) >> 16
@@ -238,44 +207,46 @@ def test_silence():
 
     # THE TAIL MUST FADE, NOT STOP.
     #
-    # Reported from hardware: "the decay to silence is always too abrupt - I
-    # can hear it cut off". The floor was 8 of 4095, which is -54dB: negligible
-    # written down, plainly audible in the room, and it lopped the last 18dB
-    # off every note. The last level before silence must be 1, the smallest
-    # step the 12-bit output can render.
+    # Reported from hardware three times, in increasingly specific ways: "the
+    # decay to silence is always too abrupt - I can hear it cut off", then,
+    # after a fix that slowed the SHIFT near the floor but not the plateau
+    # this created, "I am still hearing notes finish", then, after a fix that
+    # replaced the ending with a linear ramp but compressed 40+dB of
+    # perceived loudness into its last ~60ms, "notes are STILL ending very
+    # very audibly". See ENV_FRAC in breath.h for the full history. The last
+    # level before silence must be 1, the smallest step the 12-bit output can
+    # render.
     last = out[tail - 1]
     check("the last audible level before silence is 1", last, 1)
 
-    # And it must LINGER there rather than leaping from loud to nothing: the
-    # final linear ramp (see EASE_TAIL_TICKS) is deliberately short and even,
-    # not slow, but it must still take more than a couple of ticks -- a
-    # one-tick drop from audible to silent is the exact cliff this was fixed
-    # to remove.
+    # And it must LINGER there rather than leaping from loud to nothing --
+    # the exponential's own step size near the floor is what governs this
+    # now (see ENV_FRAC), not a separately engineered ending.
     quiet_from = next(i for i in range(300, tail) if out[i] <= 4)
     check_true("the last few dB take real time",
                ms(tail - quiet_from) > 2,
                f"{ms(tail-quiet_from):.0f}ms below level 4")
 
 
-def test_the_tail_eases_off():
-    """The last stretch of the tail must actually FADE, not plateau-then-cliff.
+def test_no_plateau_near_silence():
+    """The release must taper smoothly all the way down, with no held step.
 
-    Reported from hardware twice: "the decay to silence is always too abrupt",
-    then, after the exponential's shift was slowed further at low levels,
-    "I am still hearing notes finish". The second report was because slowing
-    an EXPONENTIAL'S shift only changes env_, the internal accumulator --
-    LevelQ12() is env_ >> ENV_FRAC, and once the exponential's remaining step
-    is smaller than one count of that shifted-down output, the audible level
-    holds perfectly flat for many ticks and then snaps straight to zero. A
-    slow-then-sudden staircase, not a fade.
+    Three fixes were tried at this exact spot: slowing the exponential
+    further near the floor (still plateaus, just at a lower level), and a
+    separate linear ramp for the final stretch (evenly stepped in raw
+    amplitude, but that compressed most of the perceived LOUDNESS -- which
+    is logarithmic -- into its last ~60ms, so it still sounded like a cliff).
+    Both were reported as audible failures on hardware; see ENV_FRAC in
+    breath.h.
 
-    So the fix is not "slower still" but a change of SHAPE: below
-    EASE_LEVEL_1 the tail is linear, not exponential, sized in ticks rather
-    than as a fraction of the remainder. This asserts there is no long flat
-    plateau on any of the last few audible counts, and that the final drop to
-    silence is no bigger than the steps before it.
+    The actual fix needed neither: a plain one-pole exponential's worst-case
+    plateau at the bottom is `(1 << ENV_FRAC) / CTRL_RATE` seconds,
+    independent of the release shift, so ENV_FRAC alone controls it. This
+    asserts there is no long flat plateau anywhere near the end, and that the
+    final drop to silence is no bigger than the steps before it -- true for
+    the WHOLE tail now, not just an engineered ending.
     """
-    print("the tail eases off")
+    print("no plateau near silence")
     b = Breath()
     b.set_knob(4095)
     b.set_attack(0)
@@ -307,6 +278,23 @@ def test_the_tail_eases_off():
 
     check_true("and the whole tail is musically long", total > 500,
                f"{total:.0f}ms")
+
+    # A TRUE fade is constant dB PER UNIT TIME -- that's what "exponential"
+    # means perceptually. Compare the dB rate near the start of the tail to
+    # the rate near the end; a real one-pole should keep them close, unlike
+    # the old two-phase design where the ending's rate (in the audible,
+    # quantised output) diverged wildly from the start's.
+    def db_at(t_ms):
+        i = 600 + int(t_ms * CTRL_RATE / 1000)
+        v = out[i] if i < end else 0
+        return 20 * math.log10(v / 4095) if v else -99.0
+    early = db_at(0) - db_at(100)
+    late = db_at(total * 0.6) - db_at(total * 0.6 + 100)
+    print(f"        early rate {early:.1f}dB/100ms, "
+          f"late rate {late:.1f}dB/100ms")
+    check_true("the fade rate stays close to constant, start to finish",
+               0.4 < late / early < 2.5,
+               f"{early:.1f} vs {late:.1f} dB/100ms")
 
 
 def test_release_trim():
@@ -574,7 +562,7 @@ def test_no_pitch_change_from_main():
 def main():
     print("breathsim — model of breath.cpp\n")
     test_silence()
-    test_the_tail_eases_off()
+    test_no_plateau_near_silence()
     test_release_trim()
     test_main_ignored_while_held()
     test_a_tap_is_a_note()

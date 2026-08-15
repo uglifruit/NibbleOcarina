@@ -3,13 +3,13 @@ Name: NIBBLE OCARINA
 short-description: Turns the Workshop System's four buttons into the finger holes of a bowed flute you play with a switch
 Language: C++ (ComputerCard)
 Creator: Andy Jenkinson (uglifruit)
-Version: "4.1.0"
+Version: "4.2.0"
 Status: Released
 License: CC-BY-4.0
 repository: https://github.com/uglifruit/NibbleOcarina
 Editor: none
 date-created: 2026-08-08
-date-updated: 2026-08-14
+date-updated: 2026-08-15
 
 contact:
   social:
@@ -17,7 +17,7 @@ contact:
 
 uf2:
   - path: UF2/ocarina.uf2
-    name: NIBBLE OCARINA 4.1.0
+    name: NIBBLE OCARINA 4.2.0
 
 tags:
   - flute
@@ -151,8 +151,8 @@ panel:
 controls:
   switch:
     up:
-      name: Portamento toggle
-      description: "Flick UP and let go to toggle PORTAMENTO on or off - LED 4 shows which. Holding it does nothing at all, and that is deliberate - a switch position you hold while playing cannot also carry a timed gesture, a rule this card learned twice the hard way. With portamento on, changing the fingering glides to the new pitch in about seventy milliseconds instead of stepping, and while the bow is held that glide happens without re-attacking, the way a finger moves on a bowed string."
+      name: Session parameters
+      description: "A third STABLE position, held for as long as you want to be here - not a flicked toggle. Press one of the fingering buttons (A, B, C or D) and turn Main to set that parameter: A is portamento glide time, B is overall vibrato depth, C is wavefold amount, D is reserved for later. Whatever fingering happens to be held the moment you arrive here is ignored - the next PRESS is what selects, so you never accidentally set a parameter just by entering the mode with a finger already down. Values are kept for the session, the same as tuning. Any note already ringing out keeps doing so exactly as it would anywhere else - this mode only intercepts the buttons and Main, it does not touch the envelope, and switch DOWN and Pulse In 1 are both ignored here so a new note cannot fire while you are dialling something in."
     middle:
       name: Rest
       description: The switch's resting position. Nothing sounds here - the card is silent until you bow it, either by holding the switch down or by sending a gate to Pulse In 1.
@@ -166,7 +166,7 @@ controls:
     -
       main:
         name: Breath
-        description: "The card's only way to be silent - below about seven percent of travel the instrument does not sound at all. It has two jobs, one after the other, on the SAME physical position. WHILE HELD it sets the note's PEAK and, coupled to it, how long the note takes to die away once you let go - a loud note rings for over a second, a quiet one is gone in under a tenth. The peak follows an S-curve that leaves silence gently, rises steeply through the middle and flattens off around half travel, and past that point the knob stops adding volume and starts adding VIBRATO instead. So the bottom half is how loud and the top half is how much it sings. THE MOMENT YOU LET GO, Main's job changes: it now TRIMS the release live, every tick, for as long as the tail keeps sounding. Leave it where it was and the note rings out at the length its peak earned; turn it further anticlockwise and the tail shortens, all the way down to a near-instant truncate - a way to cut a note off without touching the switch. It can only shorten what the peak bought, never lengthen past it. Nothing in its travel changes the PITCH - a register switch lived here until v3.2, a leftover from an older voice, and it read as an octave jump in the middle of the vibrato. The octave is chosen with X during calibration instead. DURING CALIBRATION this knob becomes fine tune, plus or minus one hundred cents."
+        description: "The card's only way to be silent - below about seven percent of travel the instrument does not sound at all. It has two jobs, one after the other, on the SAME physical position. WHILE HELD it sets the note's PEAK and, coupled to it, how long the note takes to die away once you let go - a loud note rings for over a second, a quiet one is gone in under a tenth. The peak follows an S-curve that leaves silence gently, rises steeply through the middle and flattens off around half travel, and past that point the knob stops adding volume and starts adding VIBRATO instead. So the bottom half is how loud and the top half is how much it sings. THE MOMENT YOU LET GO, Main's job changes: it now TRIMS the release live, every tick, for as long as the tail keeps sounding, decaying smoothly the whole way down with no held step and no separate ending shape - just one continuous fade. Leave it where it was and the note rings out at the length its peak earned; turn it further anticlockwise and the tail shortens, all the way down to a near-instant truncate - a way to cut a note off without touching the switch. It can only shorten what the peak bought, never lengthen past it. Nothing in its travel changes the PITCH - a register switch lived here until v3.2, a leftover from an older voice, and it read as an octave jump in the middle of the vibrato. The octave is chosen with X during calibration instead. WHILE SWITCH UP IS HELD, Main takes on a third job entirely: setting whichever session parameter A/B/C/D is selected. DURING CALIBRATION this knob becomes fine tune, plus or minus one hundred cents."
       x:
         name: Timbre
         description: "Two jobs at once. It sets the ATTACK SHAPE, from a three-millisecond strike at fully anticlockwise to an eight-hundred-millisecond swell at fully clockwise. And it sets what KIND of vibrato the Main knob adds, morphing through three characters: fully anticlockwise is fast and wide (8Hz, 50 cents) which is dramatic, the centre is fast and tight (8Hz, 10 cents) which is nervous and close, and fully clockwise is slow and wide (3Hz, 50 cents) which is operatic. Turning it up also tilts the level a little and opens the wavefolder on Audio Out 2, so the clockwise end is slower-vibrato, slightly louder and more harmonically complex at once. The fold deliberately stops at half its available range - past that point the harmonics dip before rising again, and a knob that gets brighter then duller reads as broken."
@@ -178,8 +178,8 @@ controls:
       display: list
       items:
         - id: LED0-3
-          description: "In play, the fingering you are holding - the 2x2 block is laid out like the Four Voltages buttons, so the panel mirrors your fingers. During calibration, the combination to hold next, blinking, with already-visited buttons glowing dimly. After a fall back to ten, a four-LED bar showing how close the patch came to fifteen."
+          description: "In play, the fingering you are holding - the 2x2 block is laid out like the Four Voltages buttons, so the panel mirrors your fingers. With switch UP held, the SAME block instead shows which session parameter is selected (A/B/C/D), lit solid at that button's position, dark until you press one. During calibration, the combination to hold next, blinking, with already-visited buttons glowing dimly. After a fall back to ten, a four-LED bar showing how close the patch came to fifteen."
         - id: LED4
-          description: "In play, the PORTAMENTO indicator - the one thing about the card's state you cannot hear until the next note. During calibration it marks the four singles."
+          description: "In play, dark - the old portamento on/off indicator is gone now that portamento has no on/off, only a session-set time. With switch UP held and a parameter selected, lights when its value has crossed a third of its range - together with LED5 the two form a coarse bar. During calibration it marks the four singles."
         - id: LED5
-          description: "In play, the mode indicator - dimly lit means all fifteen combinations are live, dark means ten. This is the one thing worth knowing mid-performance, because it tells you whether a third finger does anything. During calibration it marks pairs."
+          description: "In play, the mode indicator - dimly lit means all fifteen combinations are live, dark means ten. This is the one thing worth knowing mid-performance, because it tells you whether a third finger does anything. With switch UP held and a parameter selected, lights when its value has crossed two thirds of its range, alongside LED4. During calibration it marks pairs."
