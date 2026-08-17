@@ -125,37 +125,43 @@ constexpr int32_t kEnvFloor = 1;
 
 /// Extra fractional bits carried in the envelope accumulator.
 ///
-/// Without ANY extra bits, `v -= (v >> shift)` STALLS: once `v >> shift`
-/// rounds to zero the decay stops dead, which caps the achievable release
-/// length regardless of the shift. NIBBLE hit exactly this and every setting
-/// past shift 11 decayed in the same 43ms.
+/// **kEnvFrac MUST BE >= the largest release shift ever used.** That is the
+/// whole rule, and getting it wrong is what made four separate attempts at
+/// "fix the abrupt ending" fail.
 ///
-/// But too MANY extra bits reintroduces a different fault, found twice on
-/// this card. LevelQ12() — what the ear and the VCA actually hear — is
-/// env_ >> kEnvFrac, a 12-bit integer, and near the floor the exponential's
-/// per-tick step in env_ becomes smaller than one whole LevelQ12() count. The
-/// audible output then holds perfectly flat for `(1 << kEnvFrac)` ticks before
-/// dropping by one count, and at kEnvFrac = 8 that plateau is 85ms on the last
-/// few audible levels — inaudible in a coarse dB-per-200ms measurement, but a
-/// held-then-cliff shape at the ear, reported twice: "the decay to silence is
-/// always too abrupt", and again, after a v4.0.2 attempt that slowed the
-/// exponential further instead of shortening this plateau, "still VERY
-/// AUDIBLY stopping". A separate v4.0.3 "final linear ramp" patched the
-/// symptom but concentrated 40+dB of perceived loudness into its last ~60ms
-/// (a ramp linear in raw amplitude is nowhere near linear in the dB the ear
-/// actually tracks) and simply moved the cliff later — "notes are STILL
-/// ending very very audibly".
+/// `Tick()` decays by `step = env_ >> rel`, with `if (step == 0) step = 1` to
+/// stop the decay stalling dead (NIBBLE hit that: every shift past 11 decayed
+/// in the same 43ms). But that guard is not free. The moment `env_ >> rel`
+/// rounds to zero, the forced `step = 1` takes over and the envelope stops
+/// being exponential at all — it becomes LINEAR IN AMPLITUDE, subtracting a
+/// fixed amount per tick. Linear-in-amplitude means the level halves in half
+/// the time, then half of that, then half of that: in dB the decay
+/// ACCELERATES without limit and runs off a cliff. That is heard, correctly,
+/// as a note that stops rather than fades.
 ///
-/// The actual fix needs no ramp and no easing at all: the worst-case plateau
-/// at the bottom of a pure exponential is `(1 << kEnvFrac) / kCtrlRate`
-/// seconds, independent of the release shift, so it is set directly by
-/// kEnvFrac. 4 gives a ~5ms worst-case hold — well under audible-as-a-step —
-/// while still comfortably avoiding the original stall (verified across the
-/// full kReleaseShiftMin..kReleaseShiftMax + kReleaseTrimShift range in
-/// tools/breathsim.py). The release is ONE shape, exponential, start to
-/// finish: constant percentage loss per tick is constant dB per unit time,
-/// which is what a fade actually is.
-constexpr int kEnvFrac = 4;
+/// The takeover happens at `env_ == (1 << rel)`, i.e. at output level
+/// `(1 << rel) >> kEnvFrac`. So kEnvFrac alone decides how much of the tail
+/// is a true exponential and how much is that accelerating linear collapse:
+///
+///     kEnvFrac 8, rel 10  ->  collapse below level 4    (-60dB, inaudible)
+///     kEnvFrac 4, rel 10  ->  collapse below level 64   (-36dB, VERY audible)
+///     kEnvFrac 12, rel 10 ->  collapse below level 0    (never — exact)
+///
+/// Four attempts were made at this before the cause was found, and each
+/// misread the symptom. v4.0.2 slowed the shift near the floor (which only
+/// moves the takeover point, and made the plateau longer). v4.0.3 replaced
+/// the ending with a linear ramp — i.e. deliberately implemented the very
+/// collapse that was the bug, then wondered why "notes are STILL ending very
+/// very audibly". v4.2.0 cut kEnvFrac from 8 to 4 to shorten a plateau, which
+/// moved the collapse from -60dB up to -36dB and made it dramatically worse.
+///
+/// 12 >= kReleaseShiftMax (10) with two bits spare, so `env_ >> rel` stays at
+/// least 4 even at the quietest audible level and the exponential is exact
+/// the whole way to the floor. Measured in tools/breathsim.py: every 6dB
+/// halving takes the same ~236ms from full scale down to level 8, where the
+/// remaining steps are +/-1 count of a 12-bit DAC and inaudible regardless.
+/// Peak env_ is 4095 << 12 = 16.7M, comfortably inside int32.
+constexpr int kEnvFrac = 12;
 
 // ---------------------------------------------------------------------------
 // Vibrato

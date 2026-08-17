@@ -5,6 +5,95 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v4.2.1 — the forced minimum step was the bug, all four times
+
+> "This fading to silence - STILL feels like an abrupt stop on everything at
+> the end - even at the longest decay. I'm sure I could add a reverb tail -
+> but still ... ramping a note smoothly to silence SHOULDN'T be beyond us."
+
+It shouldn't, and it wasn't — the cause had been sitting in plain sight
+since v4.0.1, hidden by the fact that every fix and every test looked at
+the wrong part of the tail.
+
+### The actual mechanism
+
+`Tick()` decays the envelope with `step = env_ >> rel`, guarded by
+`if (step == 0) step = 1;` so the decay can never stall dead — NIBBLE hit
+that stall and every shift past 11 decayed in the same 43ms, so the guard
+is genuinely needed.
+
+But that guard has a consequence nobody had traced. The instant
+`env_ >> rel` rounds to zero, the forced `step = 1` takes over and the
+envelope **stops being exponential**. It becomes linear in AMPLITUDE:
+subtracting a fixed amount per tick. A linear-in-amplitude decay halves in
+half the time, then half of that, then half of that — in dB it accelerates
+without limit and falls off a cliff at the end. That is precisely "an
+abrupt stop", and it was happening on every single note.
+
+The takeover point is `env_ == (1 << rel)`, i.e. output level
+`(1 << rel) >> kEnvFrac`. So `kEnvFrac` alone decides how much of the tail
+is a true fade and how much is that collapse:
+
+| `kEnvFrac` | rel 10 collapses below | in dB |
+|---|---|---|
+| 8 (v4.0.1–v4.1) | level 4 | −60dB, inaudible |
+| 4 (v4.2.0) | level 64 | **−36dB, very audible** |
+| 12 (now) | never | exact to the floor |
+
+**v4.2.0 made it worse.** Cutting `kEnvFrac` from 8 to 4 to shorten a
+plateau moved the collapse from −60dB — where the audio is ±4 counts and
+nobody could hear it — all the way up to −36dB, right in the middle of the
+audible tail. That is why this report came back stronger than the previous
+ones.
+
+Measured on the shipped v4.2.0, time between successive halvings of the
+output level:
+
+    119, 121, 123, 129, 141, 168, 85, 43 ms
+
+Constant for the first six, then collapsing. With `kEnvFrac = 12`:
+
+    118, 118, 118, 117, 117, 116, 114, 109 ms
+
+Flat. A true 6dB-per-118ms exponential across the entire audible span. The
+slight taper in the last two is 12-bit output quantisation at ±8 counts and
+is unavoidable and inaudible.
+
+The rule, now stated in `breath.h` and CLAUDE.md: **`kEnvFrac` must be at
+least `kReleaseShiftMax`.** 12 against a max shift of 10 leaves two bits
+spare. Peak `env_` becomes 4095 << 12 = 16.7M, comfortably inside int32.
+
+### Why four tests passed a broken envelope
+
+This is the more useful lesson. Every previous attempt shipped with a
+passing model test:
+
+- v4.0.2 measured dB per 200ms at the start of the tail versus ~70% through.
+- v4.0.3 measured per-level hold times in the last ten steps, plus dB rate
+  at 60% through.
+- v4.2.0 added a start-versus-60% rate comparison.
+
+Every one of those windows lands in the **healthy** part of the decay. The
+fault was always in the last stretch, and a window average is exactly the
+wrong instrument for finding a fault that only exists at the end — it
+smears it into a region that is fine.
+
+`test_every_halving_takes_the_same_time()` replaces them: walk the whole
+tail, record when the level crosses each successive halving, and require
+that no gap is shorter than the first. It fails at 0.36x on the shipped
+v4.2.0 — verified by forcing `ENV_FRAC = 4` and watching it go red before
+committing the fix. `test_no_plateau_near_silence()` is kept as its mirror
+image, since too MANY fractional bits freezes the audible level instead of
+collapsing it; the two faults pull in opposite directions and both tests
+have to pass together.
+
+**When a symptom survives three fixes, the diagnosis is wrong, not the
+dose.** Each attempt here refined the shape of the ending; none asked why
+the ending had a shape of its own at all, when a one-pole is supposed to be
+one curve from top to bottom.
+
+---
+
 ## v4.2.0 — the release was never actually fixed, and switch UP gets a real job
 
 Two changes: the third and (this time, actually) final attempt at the release

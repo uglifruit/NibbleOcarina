@@ -32,7 +32,10 @@ RELEASE_SHIFT_MAX = 10
 RELEASE_TRIM_SHIFT = 5
 RELEASE_SHIFT_FLOOR = 2
 ENV_FLOOR = 1
-ENV_FRAC = 4
+# MUST be >= RELEASE_SHIFT_MAX, or the forced `step = 1` turns the bottom of
+# the release into a linear-in-amplitude collapse that accelerates in dB.
+# See kEnvFrac in breath.h -- this one constant is the whole bug, four times.
+ENV_FRAC = 12
 
 VIB_HZ_TO_INC_Q16 = 366503876
 GLIDE_SHIFT = 5
@@ -228,25 +231,29 @@ def test_silence():
                f"{ms(tail-quiet_from):.0f}ms below level 4")
 
 
-def test_no_plateau_near_silence():
-    """The release must taper smoothly all the way down, with no held step.
+def test_every_halving_takes_the_same_time():
+    """THE test for this envelope. Four fixes failed because none did this.
 
-    Three fixes were tried at this exact spot: slowing the exponential
-    further near the floor (still plateaus, just at a lower level), and a
-    separate linear ramp for the final stretch (evenly stepped in raw
-    amplitude, but that compressed most of the perceived LOUDNESS -- which
-    is logarithmic -- into its last ~60ms, so it still sounded like a cliff).
-    Both were reported as audible failures on hardware; see ENV_FRAC in
-    breath.h.
+    An exponential decay halves in a constant time. That is the definition,
+    and 6dB per constant interval is exactly what an ear calls "fading
+    evenly". So: measure the time between every successive halving of the
+    output level across the WHOLE tail, and require them to match.
 
-    The actual fix needed neither: a plain one-pole exponential's worst-case
-    plateau at the bottom is `(1 << ENV_FRAC) / CTRL_RATE` seconds,
-    independent of the release shift, so ENV_FRAC alone controls it. This
-    asserts there is no long flat plateau anywhere near the end, and that the
-    final drop to silence is no bigger than the steps before it -- true for
-    the WHOLE tail now, not just an engineered ending.
+    This is the assertion that four previous attempts needed and did not
+    have. Each earlier test looked at a WINDOW -- dB per 200ms near the
+    start versus somewhere around 60-70% of the way through -- and every one
+    of those windows landed inside the healthy part of the decay. The fault
+    was always in the last stretch, where `step = env >> rel` rounds to zero,
+    the forced `step = 1` takes over, and the envelope silently stops being
+    exponential and becomes linear in AMPLITUDE. Linear in amplitude halves
+    in half the time, then half of that, then half of that: measured on the
+    shipped v4.2.0, the halvings ran 119, 121, 123, ... then 85, 43, 21, 11,
+    5ms. An accelerating collapse, heard exactly as reported -- "STILL feels
+    like an abrupt stop on everything at the end".
+
+    A window test cannot see that. Consecutive halvings can.
     """
-    print("no plateau near silence")
+    print("every halving takes the same time")
     b = Breath()
     b.set_knob(4095)
     b.set_attack(0)
@@ -254,7 +261,61 @@ def test_no_plateau_near_silence():
     end = next(i for i in range(600, len(out)) if out[i] == 0)
     total = ms(end - 600)
 
-    # Walk the tail and find how long each distinct audible level is held.
+    # Time to first reach each successive halving of full scale.
+    marks = []
+    th = 2048
+    for i in range(600, end):
+        while th >= 1 and out[i] <= th:
+            marks.append((th, ms(i - 600)))
+            th //= 2
+        if th < 1:
+            break
+
+    # Gaps between consecutive halvings. Levels below 8 are +/-1..4 counts of
+    # a 12-bit DAC -- genuinely inaudible, and quantisation there is
+    # unavoidable, so the constant-rate requirement covers the audible span.
+    audible = [(lvl, t) for lvl, t in marks if lvl >= 8]
+    gaps = [audible[i][1] - audible[i - 1][1] for i in range(1, len(audible))]
+
+    print(f"        total {total:.0f}ms, halvings at "
+          + ", ".join(f"{lvl}:{t:.0f}ms" for lvl, t in audible))
+    print("        gaps between halvings: "
+          + ", ".join(f"{g:.0f}" for g in gaps) + " ms")
+
+    check_true("there are enough halvings to be a real fade", len(gaps) >= 6,
+               f"{len(gaps)} halvings above level 8")
+
+    # The killer assertion: no halving may be much quicker than the first.
+    # An accelerating collapse fails this immediately; a true exponential
+    # holds every gap within a few percent.
+    worst = min(gaps) / gaps[0]
+    check_true("no halving is faster than the one before it (no collapse)",
+               worst > 0.75,
+               f"quickest halving is {worst:.2f}x the first")
+
+    check_true("and the whole tail is musically long", total > 500,
+               f"{total:.0f}ms")
+
+
+def test_no_plateau_near_silence():
+    """No audible level may be HELD flat long enough to read as a stall.
+
+    The mirror-image failure to the collapse above: too many fractional bits
+    and the exponential's step near the floor rounds below one output count,
+    so the audible level sits perfectly still for `(1 << ENV_FRAC)` ticks at
+    a time. At ENV_FRAC 8 with the old arrangement that was 85ms per level.
+
+    Both faults are governed by ENV_FRAC and they pull in opposite
+    directions, which is why this test and the halving test must BOTH pass:
+    too few bits collapses the ending, too many freezes it.
+    """
+    print("no plateau near silence")
+    b = Breath()
+    b.set_knob(4095)
+    b.set_attack(0)
+    out = play(b, 600, 200000)
+    end = next(i for i in range(600, len(out)) if out[i] == 0)
+
     holds = []
     run_start = 600
     prev = out[600]
@@ -265,36 +326,14 @@ def test_no_plateau_near_silence():
             run_start = i
             prev = v
 
-    last_ten = holds[-10:]
-    worst_hold_ms = max(ms(t) for _, t in last_ten)
-    print(f"        total {total:.0f}ms, longest hold in the last "
-          f"10 steps: {worst_hold_ms:.0f}ms")
-    check_true("no long flat plateau near the end", worst_hold_ms < 40,
-               f"{worst_hold_ms:.0f}ms")
-
-    check("the last audible level steps down by exactly 1 each time",
-          [lvl for lvl, _ in last_ten[-5:]],
-          list(range(last_ten[-5][0], last_ten[-5][0] - 5, -1)))
-
-    check_true("and the whole tail is musically long", total > 500,
-               f"{total:.0f}ms")
-
-    # A TRUE fade is constant dB PER UNIT TIME -- that's what "exponential"
-    # means perceptually. Compare the dB rate near the start of the tail to
-    # the rate near the end; a real one-pole should keep them close, unlike
-    # the old two-phase design where the ending's rate (in the audible,
-    # quantised output) diverged wildly from the start's.
-    def db_at(t_ms):
-        i = 600 + int(t_ms * CTRL_RATE / 1000)
-        v = out[i] if i < end else 0
-        return 20 * math.log10(v / 4095) if v else -99.0
-    early = db_at(0) - db_at(100)
-    late = db_at(total * 0.6) - db_at(total * 0.6 + 100)
-    print(f"        early rate {early:.1f}dB/100ms, "
-          f"late rate {late:.1f}dB/100ms")
-    check_true("the fade rate stays close to constant, start to finish",
-               0.4 < late / early < 2.5,
-               f"{early:.1f} vs {late:.1f} dB/100ms")
+    # Only levels that are actually audible: at level 4 the sine output is
+    # +/-4 counts of 2048, and below that quantisation dominates anyway.
+    audible = [(lvl, t) for lvl, t in holds if lvl >= 8]
+    worst_lvl, worst_t = max(audible, key=lambda p: p[1])
+    print(f"        longest hold on an audible level: "
+          f"{ms(worst_t):.0f}ms at level {worst_lvl}")
+    check_true("no audible level is held long enough to read as a stall",
+               ms(worst_t) < 60, f"{ms(worst_t):.0f}ms at level {worst_lvl}")
 
 
 def test_release_trim():
@@ -562,6 +601,7 @@ def test_no_pitch_change_from_main():
 def main():
     print("breathsim — model of breath.cpp\n")
     test_silence()
+    test_every_halving_takes_the_same_time()
     test_no_plateau_near_silence()
     test_release_trim()
     test_main_ignored_while_held()

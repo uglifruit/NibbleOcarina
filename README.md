@@ -102,10 +102,10 @@ and — past about a third of its travel — how much vibrato it gains:
 
 | Main | note |
 |---|---|
-| just above silent | quiet, ~95ms, steady |
-| a third up | most of full volume, a few hundred ms |
-| two thirds | loud, ~1s, singing |
-| full | loudest, over a second, wide vibrato |
+| just above silent | very quiet, gone almost at once |
+| a fifth up | quiet, ~80ms |
+| two thirds | loud, ~700ms, singing |
+| full | loudest, ~1.4s, wide vibrato |
 
 Loud notes lasting longer is the coupling that makes one knob feel like
 dynamics rather than a fader. Turn it while the bow is held and the note swells

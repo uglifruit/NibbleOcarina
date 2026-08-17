@@ -128,31 +128,39 @@ and was clearly audible as the decay "cutting off". The last audible level is
 `1 << kEnvFrac`; anything above that removes tail the hardware could still
 render, anything below just holds the gate high in silence.
 
-**The release is ONE exponential shape, start to finish — no ease, no ramp,
-no special-cased ending.** Two earlier attempts tried to fix "notes sound
-like they stop" by changing the SHAPE of the last stretch (a slower shift
-below a threshold, then a separate linear ramp) and both made it audibly
-worse, because both were treating the symptom. `kEaseLevel1`/`kEaseTailTicks`
-are gone.
+**`kEnvFrac` MUST be >= the largest release shift (`kReleaseShiftMax`).**
+This single constraint is the whole of the "notes end abruptly" saga, which
+took FOUR failed attempts because every one of them misread the symptom.
 
-A plain one-pole IS a correct fade: constant percentage loss per tick is
-constant dB per unit time, which is what fading means. The actual defect,
-present since v4.0.1, was a plateau-then-cliff at the very bottom:
-`LevelQ12()` is `env_ >> kEnvFrac`, a 12-bit integer, and once the
-exponential's per-tick step in `env_` drops below one whole `LevelQ12()`
-count, the audible output holds flat for `(1 << kEnvFrac)` ticks before
-dropping by one — a plateau, not a fade, however slow you make the shift
-approaching it. The linear-ramp attempt fixed the plateau but was linear in
-raw AMPLITUDE, not the dB the ear actually tracks, which compressed 40+dB of
-perceived loudness into its last ~60ms and simply moved the cliff later —
-reported as "notes are STILL ending very very audibly" even at the untrimmed
-full length. The real lever was `kEnvFrac` itself, which sets that plateau's
-length directly (`(1 << kEnvFrac) / kCtrlRate` seconds, independent of the
-release shift): dropped from 8 to 4, worst-case plateau anywhere in the tail
-is ~5ms. `breathsim.py`'s `test_no_plateau_near_silence()` checks the actual
-per-level hold times AND that the dB/time rate stays close to constant from
-the start of the tail to the end — not a coarse average, which is exactly
-what let both prior plateaus through undetected.
+`Tick()` decays by `step = env_ >> rel` with `if (step == 0) step = 1` to
+stop it stalling. That guard is not free: the moment `env_ >> rel` rounds to
+zero, the forced `step = 1` takes over and **the envelope stops being
+exponential and becomes linear in AMPLITUDE.** Linear in amplitude halves in
+half the time, then half of that, then half of that — in dB it ACCELERATES
+without limit and runs off a cliff. Heard, correctly, as a note that stops
+rather than fades. The takeover is at output level `(1 << rel) >> kEnvFrac`,
+so `kEnvFrac` alone decides how much of the tail is real:
+
+    kEnvFrac 8, rel 10  -> collapse below level 4   (-60dB, inaudible)
+    kEnvFrac 4, rel 10  -> collapse below level 64  (-36dB, VERY audible)
+    kEnvFrac 12, rel 10 -> never collapses — exact to the floor
+
+The failures: v4.0.2 slowed the shift near the floor (only moves the
+takeover point). v4.0.3 replaced the ending with a linear ramp — i.e.
+deliberately implemented the exact collapse that WAS the bug. v4.2.0 cut
+`kEnvFrac` 8→4 chasing a plateau and moved the collapse from -60dB to -36dB,
+making it dramatically worse. Only the fourth pass measured **consecutive
+halving times** and saw it: 119, 121, 123, 129, 141, 168, then 85, 43ms.
+
+**Test releases by halving time, never by a dB-per-window average.** Every
+failed attempt had a passing test. All of them sampled a window somewhere in
+the first two-thirds of the tail, which is healthy in every version — the
+fault was always in the last stretch. `breathsim.py`'s
+`test_every_halving_takes_the_same_time()` measures the gap between each
+successive halving of the output across the whole tail and requires none to
+be quicker than the first; it fails at 0.36x on the shipped v4.2.0.
+`test_no_plateau_near_silence()` guards the opposite fault (too many
+fractional bits freezes the level instead), so both must pass together.
 
 **The oscillator's phase is parked at zero while silent.** Letting it free-run
 puts a step of up to full scale on the first sample of every attack — measured
