@@ -68,16 +68,66 @@ constexpr int32_t kFoldMax = 2048;
 /// an audible difference, and it bounds the loop in the audio path.
 constexpr int kFoldPasses = 4;
 
+/// Extra fold BIAS Audio Out 2 carries over Audio Out 1.
+///
+/// Both outputs take the fold now — Out 1 used to be a bare sine, so all the
+/// harmonic content sat on an output many patches never use. Something still
+/// has to keep the two worth patching separately, and this is it.
+///
+/// It is extra BIAS and deliberately not extra DEPTH. Depth was tried first
+/// and broke the monotonic-brightness guarantee that kFoldMax exists to
+/// protect: the fold is already at its ceiling, so any offset above it puts
+/// Out 2 back in the region where the spectral centroid DIPS as X rises
+/// (measured 3.46 -> 2.98 -> 3.08, i.e. brighter, then duller, then brighter).
+/// Bias changes the harmonic CHARACTER instead of the fold count — measured,
+/// it drives the second harmonic from 8.8 to 835 with zero dips anywhere in
+/// X's sweep. Out 2 is the reedier output, not the more-folded one.
+constexpr int32_t kFoldBiasExtra = 700;
+
+/// Fold BIAS range, Q12, applied before folding to break its symmetry and
+/// bring in EVEN harmonics. Kept well under the fold's own ±4096 rails: past
+/// about a quarter the waveform spends so long clamped that the fundamental
+/// starts to disappear rather than the tone simply filling out.
+constexpr int32_t kFoldBiasMax = 1024;
+
+/// How much fold the BD session parameter can add on its own, Q12.
+///
+/// X sweeps the fold as a PERFORMANCE control; this sets the baseline it
+/// sweeps up FROM, so the voice can be reedy even with X at zero. The two sum
+/// and the result is clamped to kFoldMax, which is what keeps the combined
+/// control inside the monotonic region.
+///
+/// A one-pole tone filter was tried in this slot first and removed: measured,
+/// it cost six times the level while moving the spectral centroid only
+/// 3.28 -> 3.60, because 6dB/octave barely reshapes a spectrum whose
+/// harmonics are already clustered. It behaved as a volume control that
+/// slightly dulled. The folder is the timbre engine on this card — it moves
+/// the centroid 1.04 -> 3.60 monotonically — so the parameter uses that
+/// instead of adding DSP that does not earn its cycles.
+constexpr int32_t kFoldBaseMax = 2048;
+
 // ---------------------------------------------------------------------------
 // DC
 // ---------------------------------------------------------------------------
 
-/// DC blocker pole, Q15. ~8Hz corner at 48kHz.
+/// DC blocker pole, Q15. ~16Hz corner at 48kHz.
 ///
-/// The folder is symmetric and produces no DC of its own, but the level VCA
-/// multiplies whatever offset is present, and a stepped offset on a DC-coupled
-/// output is a thump. Cheap insurance.
-constexpr int32_t kDcPoleQ15 = 32735;
+/// The level VCA multiplies whatever offset is present, and a stepped offset
+/// on a DC-coupled output is a thump.
+///
+/// This is no longer cheap insurance against a nearly-symmetric signal — the
+/// fold BIAS deliberately pushes the waveform off centre, and because folding
+/// is nonlinear the DC that comes out is not the bias that went in. Measured
+/// pre-blocker across the fold's range it swings from +534 to -825, so there
+/// is nothing constant to subtract analytically; the blocker has to track it.
+///
+/// At the old ~8Hz corner it could not: ~5% of that offset survived, leaving
+/// a permanent +43 counts on Audio Out 2 that was still there after six
+/// seconds of audio. 16Hz brings the worst case to 19 counts. It also
+/// slightly INCREASES the amplitude of the lowest notes rather than eating
+/// them, because the offset it removes was itself consuming headroom (C2 peak
+/// 3159 -> 3264, measured). The corner stays well under C2's 65Hz.
+constexpr int32_t kDcPoleQ15 = 32700;
 
 // ---------------------------------------------------------------------------
 
@@ -90,8 +140,24 @@ public:
 	/// Set the pitch. Control rate only.
 	void SetIncQ32(uint32_t inc) { inc_ = inc; }
 
-	/// Wavefold depth for Audio Out 2, Q12. Control rate only.
+	/// Wavefold depth, Q12. Control rate only.
+	///
+	/// This now drives BOTH outputs. Audio Out 1 used to be a bare sine with
+	/// every bit of harmonic interest confined to Out 2, which a patch using
+	/// only the main output never heard — the card had a timbre control that
+	/// most of the time was inaudible. Both outputs fold at THIS depth; what
+	/// separates them is kFoldBiasExtra, not more folding.
 	void SetFold(int32_t foldQ12) { fold_ = foldQ12; }
+
+	/// Fold BIAS, Q12, signed. Offsets the signal before folding.
+	///
+	/// A symmetric fold produces odd harmonics only — hollow, clarinet-ish.
+	/// Pushing the waveform off centre first makes the positive and negative
+	/// folds differ, which is what puts EVEN harmonics in, and that is the
+	/// difference between hollow and full/reedy. The DC blocker downstream
+	/// removes the offset itself, so this changes the timbre without moving
+	/// the signal off zero.
+	void SetFoldBias(int32_t biasQ12) { foldBias_ = biasQ12; }
 
 	/// Slam the level for the chiff stop.
 	void Mute()   { muted_ = true; }
@@ -106,10 +172,11 @@ public:
 	bool    Square() const { return square_; }
 
 private:
-	uint32_t phase_ = 0;
-	uint32_t inc_   = 0;
-	int32_t  fold_  = 0;
-	bool     muted_ = false;
+	uint32_t phase_    = 0;
+	uint32_t inc_      = 0;
+	int32_t  fold_     = 0;
+	int32_t  foldBias_ = 0;
+	bool     muted_    = false;
 
 	int32_t sine_   = 0;
 	int32_t folded_ = 0;

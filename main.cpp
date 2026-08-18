@@ -22,10 +22,10 @@
 //   Y            scale                       (COARSE TUNE during calibration)
 //
 //   Switch UP    SESSION PARAMETERS. Six of them, one per PAIR. Hold the
-//                pair, put Main where you want it, TAP to commit. LED n is
-//                the nth pair, in the card's usual order:
-//                  AB glide time    AC vibrato depth  AD attack floor
-//                  BC vibrato rate  BD release length CD wavefold
+//                pair, put Main where you want it, RELEASE the pair to
+//                commit. LED n is the nth pair, in the card's usual order:
+//                  AB glide time   AC vibrato depth  AD vibrato rate
+//                  BC fold amount  BD fold baseline  CD fold bias
 //                On entry all six show at once as LED brightness; holding a
 //                pair leaves only its LED lit, tracking Main. Held (not
 //                momentary), a third stable position alongside DOWN — see
@@ -43,10 +43,10 @@
 // goes high. A tap is a struck note; a hold sustains for as long as you hold
 // it. While held, moving Main swells the note and changing the fingering
 // glides to the new pitch without re-attacking — every held note glides now,
-// at whatever speed session parameter A sets; there is no separate toggle.
+// at whatever speed the AB parameter sets; there is no separate toggle.
 //
-//   Audio Out 1  the tone, a sine
-//   Audio Out 2  the same tone, wavefolded as X rises
+//   Audio Out 1  the voice, wavefolded as X and the fold params rise
+//   Audio Out 2  the same, biased further — reedier, more even harmonics
 //   CV Out 1     1V/oct pitch, root at 0V
 //   CV Out 2     level — tracks what you hear
 //   Pulse Out 1  a trigger on every note change
@@ -305,6 +305,12 @@ private:
 		}
 		else
 		{
+			// Leaving UP with a pair still held must NOT commit on the way
+			// out: the player left the mode, they did not finish an edit.
+			// Forgetting the held pair here is what makes that true, and it
+			// also stops a stale value being committed on the next entry.
+			paramHeld_ = kParamNone;
+
 			// A settled fingering change only becomes a NOTE while the bow is
 			// down. During the release tail it is READ (levels_ keeps
 			// tracking, so the very next strike is instant rather than one
@@ -354,11 +360,7 @@ private:
 			// Breath's call, based on its own gate state. See breath.h.
 			breath_.SetKnob(KnobVal(Knob::Main), mainCv);
 		}
-		// X sets the attack shape; the AD parameter raises its FLOOR, so the
-		// anticlockwise end can be softened from a 3ms strike without giving
-		// up any of X's travel.
-		breath_.SetAttack(xNow_, AttackFloor());
-		breath_.SetReleaseAdj(ReleaseAdj());
+		breath_.SetAttack(xNow_);
 
 		breath_.SetGate(gate);
 
@@ -388,12 +390,19 @@ private:
 		// whole note rather than just its start.
 		PulseOut1(breath_.Sounding());
 
-		// The AC parameter scales the fold amount X asked for, same shape
-		// as the vibrato multiplier above — 0 keeps Audio Out 2 a plain sine
-		// regardless of X, 256 (default) is unchanged.
-		int32_t fold = (FoldFor(xNow_) * FoldMulQ8()) >> 8;
+		// TIMBRE. X still sweeps the fold across its own travel; the BC
+		// parameter scales how far that sweep reaches, and BD/CD shape what
+		// the fold produces. The fold now drives BOTH audio outputs — Out 1
+		// was a bare sine until v4.4, so every timbral control the card had
+		// was inaudible to a patch using only the main output.
+		// BD sets the BASELINE and X sweeps up from it, so the voice can be
+		// reedy with X at zero. Clamped to kFoldMax because that cap is what
+		// keeps brightness monotonic — see flute.h.
+		int32_t fold = FoldBase() + ((FoldFor(xNow_) * FoldMulQ8()) >> 8);
 		if (fold < 0) fold = 0;
+		if (fold > kFoldMax) fold = kFoldMax;
 		voice_.SetFold(fold);
+		voice_.SetFoldBias(FoldBias());
 
 		ReadScale();
 		UpdatePitch();
@@ -469,43 +478,55 @@ private:
 		return ParamMap(paramQ12_[kParamFold],
 			kFoldMulQ8Min, kFoldMulQ8Max);
 	}
-	uint8_t AttackFloor() const
+	int32_t FoldBase() const
 	{
-		return static_cast<uint8_t>(ParamMap(paramQ12_[kParamAttack],
-			kAttackFloorMin, kAttackFloorMax));
+		return ParamMap(paramQ12_[kParamFoldBase], 0, kFoldBaseMax);
 	}
-	int8_t ReleaseAdj() const
+
+	/// Fold bias, ±kFoldBiasMax, centred at mid-knob.
+	int32_t FoldBias() const
 	{
-		return static_cast<int8_t>(ParamMap(paramQ12_[kParamRelease],
-			kReleaseAdjMin, kReleaseAdjMax));
+		return ParamMap(paramQ12_[kParamFoldBias],
+			-kFoldBiasMax, kFoldBiasMax);
 	}
 
 	/// Switch-UP mode: a held PAIR names a parameter, Main is its value, and
-	/// a TAP commits it.
+	/// RELEASING the pair commits it.
 	///
 	/// `idx` is levels_.Current() — the pair being held right now, read
 	/// rather than edge-detected, because "hold this pair" is a state and not
 	/// an event. ControlTick() has already advanced levels_ this tick.
 	///
-	/// Committing on the tap rather than live is forced by the gesture, not a
-	/// safety rail: the pair is what NAMES the parameter, so until one is
-	/// held there is nothing Main's position could be previewing. While a
-	/// pair IS held, its LED tracks Main so the value being aimed at is
-	/// visible before it is taken.
+	/// **Commit on release, not on a switch tap.** v4.3.0 specified a tap of
+	/// the switch and that could never have worked: the switch is a single
+	/// three-position control, so tapping DOWN means leaving UP, which leaves
+	/// the mode — the commit was unreachable and the values never changed.
+	/// Releasing the pair is the gesture the player is already making.
 	///
-	/// Nothing here needs the "ignore what was already pressed on entry"
-	/// guard the single-button version had: an unintended hold does nothing
-	/// on its own, since only a deliberate tap ever writes a value.
+	/// While a pair is held its LED tracks Main, so the value being aimed at
+	/// is visible before it is taken; letting go without moving Main simply
+	/// re-commits what was already there.
+	///
+	/// Nothing here needs an "ignore what was already pressed on entry"
+	/// guard. Arriving with a pair already down and then releasing it does
+	/// write a value — but it writes Main's CURRENT position, which is the
+	/// same thing that would happen if the player had meant it. There is no
+	/// stale state to protect against because nothing is remembered between
+	/// entries.
 	void __not_in_flash_func(ParamTick)(int8_t idx)
 	{
-		paramHeld_ = ParamOfCombo(idx);
+		const int8_t nowHeld = ParamOfCombo(idx);
 
-		if (paramHeld_ == kParamNone || !tapped_) return;
+		// The falling edge of a held pair is the commit.
+		if (nowHeld == kParamNone && paramHeld_ != kParamNone)
+		{
+			int32_t knob = KnobVal(Knob::Main);
+			if (knob < 0) knob = 0;
+			if (knob > 4095) knob = 4095;
+			paramQ12_[paramHeld_] = knob;
+		}
 
-		int32_t knob = KnobVal(Knob::Main);
-		if (knob < 0) knob = 0;
-		if (knob > 4095) knob = 4095;
-		paramQ12_[paramHeld_] = knob;
+		paramHeld_ = nowHeld;
 	}
 
 	/// Sets the target pitch. Called from ControlTick() in two situations
@@ -1094,12 +1115,12 @@ private:
 	/// multipliers and the release trim, fully CCW for the attack floor
 	/// (no softening), and kGlideShiftDefault's position for the glide.
 	int32_t paramQ12_[kNumParams] = {
-		2048,   // kParamGlide   — mid travel, ~the old fixed kGlideShift
-		2048,   // kParamVibDep  — 100%
-		0,      // kParamAttack  — floor at kAttackFloorMin, as before
-		2048,   // kParamVibRate — 100%
-		2048,   // kParamRelease — no adjustment
-		2048,   // kParamFold    — 100%
+		2048,               // kParamGlide    — mid travel, the old fixed value
+		2048,               // kParamVibDep   — 100%
+		2048,               // kParamVibRate  — 100%
+		2048,               // kParamFold     — 100%
+		kFoldBaseDefault,   // kParamFoldBase — none; X alone, as before
+		kFoldBiasDefault,   // kParamFoldBias — centred, symmetric fold
 	};
 
 	/// Which parameter the currently-held pair names, or kParamNone.

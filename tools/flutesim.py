@@ -35,7 +35,10 @@ SR = 48000
 
 FOLD_MAX = 2048
 FOLD_PASSES = 4
-DC_POLE_Q15 = 32735
+FOLD_BIAS_EXTRA = 700
+FOLD_BIAS_MAX = 1024
+FOLD_BASE_MAX = 2048
+DC_POLE_Q15 = 32700
 
 VIB_RATE_FAST_Q8 = 8 * 256
 VIB_RATE_SLOW_Q8 = 3 * 256
@@ -129,11 +132,25 @@ def fold_for(x):
     return (FOLD_MAX * x) >> 12
 
 
+def fold_stage(x, depth):
+    """Triangle-reflection wavefold. Mirrors Fold() in flute.cpp."""
+    f = (x * (4096 + depth * 3)) >> 12
+    for _ in range(FOLD_PASSES):
+        if f > 4096:
+            f = 8192 - f
+        elif f < -4096:
+            f = -8192 - f
+        else:
+            break
+    return f
+
+
 class Flute:
     def __init__(self):
         self.ph = 0
         self.inc = 0
         self.fold = 0
+        self.fold_bias = 0
         self.muted = False
         self.sine = 0
         self.folded = 0
@@ -160,19 +177,19 @@ class Flute:
         self.ph = (self.ph + self.inc) & 0xFFFFFFFF
         raw = fast_sin(self.ph) >> 3
 
-        s = (raw * level) >> 12
+        # The fold drives BOTH outputs now -- Out 1 was a bare sine until
+        # v4.4, so every timbral control was inaudible to a patch using only
+        # the main output. Bias breaks the fold's symmetry to add EVEN
+        # harmonics; the DC blockers remove the offset itself.
+        biased = raw + self.fold_bias
+
+        s = fold_stage(biased, self.fold)
+        s = (s * level) >> 12
         y = s - self.dcx1 + ((self.dcy1 * DC_POLE_Q15 + 16384) >> 15)
         self.dcx1, self.dcy1 = s, y
         self.sine = y
 
-        f = (raw * (4096 + self.fold * 3)) >> 12
-        for _ in range(FOLD_PASSES):
-            if f > 4096:
-                f = 8192 - f
-            elif f < -4096:
-                f = -8192 - f
-            else:
-                break
+        f = fold_stage(biased + FOLD_BIAS_EXTRA, self.fold)
         f = (f * level) >> 12
         y = f - self.dcx2 + ((self.dcy2 * DC_POLE_Q15 + 16384) >> 15)
         self.dcx2, self.dcy2 = f, y
@@ -181,10 +198,12 @@ class Flute:
         self.square = raw >= 0
 
 
-def run(hz, level, x=0, n=20000, skip=10000, mute=False):
+def run(hz, level, x=0, n=20000, skip=10000, mute=False,
+        bias=0, base=0):
     f = Flute()
     f.set_pitch(hz)
-    f.fold = fold_for(x)
+    f.fold = min(FOLD_MAX, base + fold_for(x))
+    f.fold_bias = bias
     if mute:
         f.muted = True
     sines, folds, squares = [], [], []
@@ -304,26 +323,97 @@ def test_x_tilts_volume():
 
 
 def test_fold_adds_harmonics():
-    """Audio Out 2 must go somewhere audible as X rises."""
+    """BOTH outputs must brighten as X rises, and neither may dip.
+
+    Out 1 was a bare sine until v4.4, which meant the card's timbre control
+    was inaudible to any patch using only the main output. It takes the fold
+    now, so the monotonicity requirement kFoldMax exists to protect applies
+    to BOTH outputs -- and that is what caught the first attempt at keeping
+    them distinct, which gave Out 2 extra fold DEPTH and pushed it straight
+    back into the dipping region (3.46 -> 2.98 -> 3.08). Out 2 is separated
+    by extra BIAS instead, which changes character without adding folds.
+    """
     print("wavefold vs X")
     f0 = 220.0
+    for name, idx in (("Out1", 0), ("Out2", 1)):
+        pts = []
+        for x in (0, 1024, 2048, 3072, 4095):
+            outs = run(f0, 3000, x)
+            sig = outs[idx]
+            b = brightness(sig, f0)
+            pts.append((x, b))
+            h = harmonics(sig, f0, 6)
+            m = max(h)
+            print(f"        {name} X {x:4d} -> centroid {b:5.2f}   "
+                  + " ".join(f"{v/m:4.2f}" for v in h))
+        check_true(f"{name}: X=max is much richer", pts[-1][1] > 2.0,
+                   f"centroid {pts[-1][1]:.2f}")
+        # Past kFoldMax the centroid dips as a completing fold returns the
+        # fundamental, and a knob that brightens then dulls reads as broken.
+        check(f"{name}: richness rises with X, without dipping back",
+              all(pts[i][1] >= pts[i - 1][1] - 0.02
+                  for i in range(1, len(pts))), True)
+
+    # Out 1 starts clean: the fold is what adds harmonics, so with X at zero
+    # the main output must still be essentially a sine.
+    s0, _, _ = run(f0, 3000, 0)
+    check_true("Out1 at X=0 is still a pure sine",
+               brightness(s0, f0) < 1.05, f"centroid {brightness(s0, f0):.2f}")
+
+
+def test_fold_bias_adds_even_harmonics():
+    """The CD parameter must change EVENNESS, not just loudness.
+
+    A symmetric fold produces odd harmonics only -- hollow, clarinet-ish.
+    Biasing the wave before folding makes the two halves fold differently,
+    and the even harmonics that appear are what turns hollow into full.
+    Measured on Out 1, whose fold is otherwise exactly symmetric.
+    """
+    print("fold bias -> even harmonics")
+    f0 = 220.0
+    ratios = []
+    for bias in (0, 512, 1024):
+        sig, _, _ = run(f0, 3000, 2048, bias=bias)
+        h = harmonics(sig, f0, 6)
+        even = h[1] + h[3]      # 2nd and 4th
+        odd = h[0] + h[2]       # 1st and 3rd
+        r = even / odd if odd else 0.0
+        ratios.append(r)
+        print(f"        bias {bias:5d} -> even/odd {r:6.3f}")
+    check_true("no bias means no even harmonics", ratios[0] < 0.02,
+               f"{ratios[0]:.3f}")
+    check_true("bias brings them in", ratios[-1] > 0.10,
+               f"{ratios[-1]:.3f}")
+    check_true("and it is monotonic",
+               all(ratios[i] > ratios[i - 1] for i in range(1, len(ratios))),
+               "")
+
+
+def test_fold_base():
+    """The BD parameter must make the voice reedy with X at zero.
+
+    X sweeps the fold as a performance control; this sets the baseline it
+    sweeps up from. A one-pole tone filter occupied this slot first and was
+    removed -- measured, it cost six times the level while moving the
+    centroid only 3.28 -> 3.60, i.e. it was a volume control that slightly
+    dulled. The folder is this card's timbre engine, so the parameter uses
+    it.
+    """
+    print("fold baseline (BD parameter)")
+    f0 = 220.0
     pts = []
-    for x in (0, 1024, 2048, 3072, 4095):
-        _, folded, _ = run(f0, 3000, x)
-        b = brightness(folded, f0)
-        pts.append((x, b))
-        h = harmonics(folded, f0, 6)
-        m = max(h)
-        print(f"        X {x:4d} -> centroid {b:5.2f}   "
-              + " ".join(f"{v/m:4.2f}" for v in h))
-    check_true("X=0 is a pure sine", pts[0][1] < 1.05, f"centroid {pts[0][1]:.2f}")
-    check_true("X=max is much richer", pts[-1][1] > 2.0,
-               f"centroid {pts[-1][1]:.2f}")
-    # Monotonic, and this is why kFoldMax stops at 2048: past there the
-    # centroid dips (3.60 -> 3.00) as a completing fold returns the
-    # fundamental, and a knob that brightens then dulls reads as broken.
-    check("richness rises with X, without dipping back",
-          all(pts[i][1] >= pts[i-1][1] - 0.02 for i in range(1, len(pts))), True)
+    for base in (0, 512, 1024, 2048):
+        sig, _, _ = run(f0, 3000, 0, base=base)   # X at ZERO throughout
+        b = brightness(sig, f0)
+        pts.append(b)
+        print(f"        base {base:5d}, X=0 -> centroid {b:5.2f}")
+    check_true("with no baseline and X=0 the voice is a sine", pts[0] < 1.05,
+               f"{pts[0]:.2f}")
+    check_true("the baseline alone makes it reedy", pts[-1] > 2.0,
+               f"{pts[-1]:.2f}")
+    check_true("and it rises monotonically",
+               all(pts[i] >= pts[i - 1] - 0.02 for i in range(1, len(pts))),
+               "")
 
 
 def test_outputs_agree():
@@ -422,6 +512,8 @@ def main():
     test_x_morphs_character()
     test_x_tilts_volume()
     test_fold_adds_harmonics()
+    test_fold_bias_adds_even_harmonics()
+    test_fold_base()
     test_outputs_agree()
     test_no_dc()
     test_notes_start_without_a_click()

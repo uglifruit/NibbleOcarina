@@ -16,10 +16,24 @@ void Flute::Init()
 	phase_ = 0;
 	inc_   = 0;
 	fold_  = 0;
+	foldBias_ = 0;
 	muted_ = false;
 	sine_ = folded_ = 0;
 	square_ = false;
 	dcX1_ = dcY1_ = dcX2_ = dcY2_ = 0;
+}
+
+/// Triangle-reflection wavefold, Q12 in and out. Bounded, no division.
+static inline int32_t __not_in_flash_func(Fold)(int32_t x, int32_t depth)
+{
+	int32_t f = (x * (4096 + depth * 3)) >> 12;
+	for (int i = 0; i < kFoldPasses; i++)
+	{
+		if      (f >  4096) f =  8192 - f;
+		else if (f < -4096) f = -8192 - f;
+		else break;
+	}
+	return f;
 }
 
 void __not_in_flash_func(Flute::Step)(int32_t levelQ12)
@@ -56,8 +70,33 @@ void __not_in_flash_func(Flute::Step)(int32_t levelQ12)
 	// The raw oscillator, Q12 (+/-4096).
 	const int32_t raw = fast_sin(phase_) >> 3;
 
-	// --- Audio Out 1: the sine -------------------------------------------
-	int32_t s = (raw * levelQ12) >> 12;
+	// --- the wavefolder, shared by both outputs ---------------------------
+	//
+	// Triangle reflection: drive the signal past the rails and mirror it back
+	// inside. Each reflection folds a peak into a valley, which is what
+	// generates the harmonics.
+	//
+	// foldBias_ offsets the wave BEFORE folding. Symmetric folding produces
+	// odd harmonics only — hollow, clarinet-ish — because the positive and
+	// negative halves fold identically. Off centre they do not, and the even
+	// harmonics that appear are the difference between hollow and full. The
+	// DC blockers below remove the offset itself, so this is purely a change
+	// of shape.
+	//
+	// The loop is bounded at kFoldPasses rather than run to convergence: this
+	// is the audio path, and an unbounded loop would make the sample cost
+	// depend on the signal. Four is well past audible difference.
+	//
+	// Fold() is called TWICE, at two depths — see below.
+	const int32_t biased = raw + foldBias_;
+
+	// --- Audio Out 1: the voice -------------------------------------------
+	//
+	// This used to be a bare sine, with every bit of harmonic interest on
+	// Out 2 where a patch using only the main output never heard it. It takes
+	// the fold now, at the depth the player set.
+	int32_t s = Fold(biased, fold_);
+	s = (s * levelQ12) >> 12;
 	{
 		// The +16384 ROUNDS the shift. It sits inside the blocker's own
 		// feedback path, so a half-LSB truncation bias accumulates to a stable
@@ -69,23 +108,13 @@ void __not_in_flash_func(Flute::Step)(int32_t levelQ12)
 		sine_ = y;
 	}
 
-	// --- Audio Out 2: the wavefold ---------------------------------------
+	// --- Audio Out 2: the same fold, biased further -----------------------
 	//
-	// Triangle reflection: drive the signal past the rails and mirror it back
-	// inside. Each reflection folds a peak into a valley, which is what
-	// generates the harmonics — and because the shape stays symmetric they are
-	// ODD only, so it thickens into something reedy rather than into fuzz.
-	//
-	// The loop is bounded at kFoldPasses rather than run to convergence: this
-	// is the audio path, and an unbounded loop would make the sample cost
-	// depend on the signal. Four is well past audible difference.
-	int32_t f = (raw * (4096 + fold_ * 3)) >> 12;
-	for (int i = 0; i < kFoldPasses; i++)
-	{
-		if      (f >  4096) f =  8192 - f;
-		else if (f < -4096) f = -8192 - f;
-		else break;
-	}
+	// Kept distinct from Out 1 so the two are still worth patching apart —
+	// but by BIAS, not by depth. See kFoldBiasExtra: extra depth would push
+	// this output past the fold's monotonic ceiling and make X read as
+	// brighter-then-duller.
+	int32_t f = Fold(biased + kFoldBiasExtra, fold_);
 	f = (f * levelQ12) >> 12;
 	{
 		const int32_t y = f - dcX2_ + ((dcY2_ * kDcPoleQ15 + 16384) >> 15);

@@ -16,7 +16,6 @@ void Breath::Init()
 	relBase_ = kReleaseShiftMin;
 	relFrom_ = 4095;
 	relRecipQ16_ = 16;
-	releaseAdj_ = kReleaseAdjDefault;
 	vibCents_ = vibRateQ8_ = vibCentsMax_ = 0;
 	vibPhase_ = 0;
 }
@@ -85,21 +84,14 @@ void Breath::SetKnob(int32_t knob, int32_t cvAdd)
 	if (peak_ > 4095) peak_ = 4095;
 }
 
-void Breath::SetAttack(int32_t xKnob, uint8_t floorShift)
+void Breath::SetAttack(int32_t xKnob)
 {
 	if (xKnob < 0) xKnob = 0;
 	if (xKnob > 4095) xKnob = 4095;
-
-	// X sweeps the attack from a strike to a slow swell. `floorShift` is the
-	// AD session parameter: it raises the FAST end only, so softening the
-	// strike costs none of X's travel — the knob keeps its whole range of
-	// shapes and simply starts them gentler.
-	uint8_t fast = floorShift;
-	if (fast < kAttackShiftFast) fast = kAttackShiftFast;
-	if (fast > kAttackShiftSlow) fast = kAttackShiftSlow;
-
+	// X sweeps the attack from a strike to a slow swell.
 	attack_ = static_cast<uint8_t>(
-		fast + (((kAttackShiftSlow - fast) * xKnob) >> 12));
+		kAttackShiftFast +
+		(((kAttackShiftSlow - kAttackShiftFast) * xKnob) >> 12));
 }
 
 void Breath::SetGate(bool on)
@@ -120,10 +112,12 @@ void Breath::SetGate(bool on)
 		int32_t base = kReleaseShiftMin +
 			(((kReleaseShiftMax - kReleaseShiftMin) * effort_) >> 12);
 
-		// The BC session parameter shifts the whole coupling up or down. Its
-		// ceiling is bounded so base can never exceed kEnvFrac — see
-		// kReleaseAdjMax, and kEnvFrac's comment for what happens if it does.
-		base += releaseAdj_;
+		// Clamped at kEnvFrac and not merely at kReleaseShiftMax. The bound
+		// that matters is the one against kEnvFrac: a release shift above it
+		// brings back the forced `step = 1` collapse that took four attempts
+		// to find. Kept as an assertion in code even though the range above
+		// cannot currently reach it, because the next person to widen
+		// kReleaseShiftMax will not read kEnvFrac's comment first.
 		if (base < kReleaseShiftFloor) base = kReleaseShiftFloor;
 		if (base > kEnvFrac)           base = kEnvFrac;
 		relBase_ = static_cast<uint8_t>(base);

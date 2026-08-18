@@ -289,11 +289,21 @@ constexpr uint16_t kLedGlow = 180;
 // mode, exactly as DOWN already is.
 //
 // SIX parameters, one per PAIR. Hold the pair, put Main where you want it,
-// TAP the switch to commit. LED n is the nth pair, in the order the Combo
-// enum already lists them:
+// and RELEASE the pair to commit. LED n is the nth pair, in the order the
+// Combo enum already lists them:
 //
-//   AB  glide time      AC  vibrato depth    AD  attack floor
-//   BC  vibrato rate    BD  release length   CD  wavefold amount
+//   AB  glide time      AC  vibrato depth    AD  vibrato rate
+//   BC  fold amount      BD  fold baseline    CD  fold bias (even harmonics)
+//
+// Four of the six are about the SOUND, which is the point: the card's voice
+// is one oscillator, so its timbre has to come from what is done to that
+// oscillator rather than from choosing between sources.
+//
+// Committing on RELEASE and not on a switch tap: the switch is a single
+// three-position control, so "tap DOWN to commit" required leaving UP, which
+// left the mode and made the commit unreachable. Shipped that way in v4.3.0
+// and it could never have worked. Releasing the pair is the gesture the
+// player is already making anyway.
 //
 // Pairs and not singles, because six is what the sound needs and there are
 // exactly six of them. Committing on a TAP rather than live is not a
@@ -311,14 +321,14 @@ constexpr uint16_t kLedGlow = 180;
 /// themselves are in the Combo enum (kAB..kCD), so ParamOfCombo() is a
 /// subtraction rather than a lookup.
 enum Param : int8_t {
-	kParamGlide   = 0,   ///< AB — portamento glide time
-	kParamVibDep  = 1,   ///< AC — vibrato depth
-	kParamAttack  = 2,   ///< AD — attack floor
-	kParamVibRate = 3,   ///< BC — vibrato rate
-	kParamRelease = 4,   ///< BD — release length
-	kParamFold    = 5,   ///< CD — wavefold amount
-	kNumParams    = 6,
-	kParamNone    = -1
+	kParamGlide    = 0,   ///< AB — portamento glide time
+	kParamVibDep   = 1,   ///< AC — vibrato depth
+	kParamVibRate  = 2,   ///< AD — vibrato rate
+	kParamFold     = 3,   ///< BC — fold depth / harmonic drive
+	kParamFoldBase = 4,   ///< BD — fold baseline, independent of X
+	kParamFoldBias = 5,   ///< CD — fold bias, evenness of the harmonics
+	kNumParams     = 6,
+	kParamNone     = -1
 };
 
 /// Combo -> parameter slot. The six pairs occupy kAB..kCD contiguously, so
@@ -363,30 +373,16 @@ constexpr int32_t kFoldMulQ8Min     = 0;
 constexpr int32_t kFoldMulQ8Max     = 384;
 constexpr int32_t kFoldMulQ8Default = 256;
 
-/// Attack FLOOR: the fastest attack X is allowed to reach, as a shift.
-///
-/// X's anticlockwise end is a 3ms strike, which is right for a percussive
-/// voice and too abrupt for a soft one. Raising this floor softens the whole
-/// bottom of X's travel without touching its top, so the knob keeps its full
-/// range of shapes and just starts them gentler.
-constexpr uint8_t kAttackFloorMin     = 2;   ///< as now — a hard strike
-constexpr uint8_t kAttackFloorMax     = 8;   ///< ~85ms even at X fully CCW
-constexpr uint8_t kAttackFloorDefault = 2;
+/// Fold BASELINE, scaled onto 0..kFoldBaseMax by the accessor. X sweeps the
+/// fold from here upward, so this is how reedy the voice is with X at zero.
+/// Defaults to none — X alone, exactly as before this existed.
+constexpr int32_t kFoldBaseDefault = 0;
 
-/// Release length trim, in shifts, added to the effort-coupled release.
-///
-/// Signed: the middle of the knob is "as the note earned", below it shortens
-/// and above it lengthens. A global feel control on top of the per-note
-/// dynamics rather than a replacement for them.
-///
-/// **The maximum is +1 and that is a hard ceiling, not a taste decision.**
-/// kReleaseShiftMax + kReleaseAdjMax must never exceed kEnvFrac, or the
-/// forced `step = 1` collapse comes back — see kEnvFrac in breath.h, which
-/// cost four failed attempts to find. 11 + 1 == 12 exactly. Raising this
-/// means raising kEnvFrac with it. (+2 would also be 24 seconds of release,
-/// which is a drone rather than a note.)
-constexpr int8_t kReleaseAdjMin     = -4;
-constexpr int8_t kReleaseAdjMax     =  1;
-constexpr int8_t kReleaseAdjDefault =  0;
+/// Fold bias, 0..4095, scaled onto ±kFoldBiasMax by the accessor. Centre is
+/// no bias — a symmetric fold, odd harmonics only — and either direction
+/// breaks the symmetry to bring in even ones. Both directions are useful and
+/// they are not identical, because the sine is not symmetric about the
+/// points the folder happens to reflect at.
+constexpr int32_t kFoldBiasDefault = 2048;
 
 } // namespace nib

@@ -10,7 +10,7 @@ buttons become the finger holes. The momentary switch is the bow, and Main is
 how hard you play: quiet notes are short, loud ones ring on, and past halfway
 it starts to sing with vibrato.
 
-The tone is a pure sine and the expression is **vibrato**. Turn the Main knob up
+The expression is **vibrato** and the timbre is a **wavefolder**. Turn the Main knob up
 and it comes quickly to full volume; keep going and vibrato grows on top of it —
 so a phrase moves from quiet and steady, through loud and steady, into loud and
 singing. **X** decides what kind of vibrato that is, morphing from fast-and-wide
@@ -51,11 +51,11 @@ knob** — hold the switch down for two seconds.
 | **Main** | held: note peak, then vibrato · released: trims the release live · **switch ↑**: sets the selected session parameter *(fine tune while calibrating)* |
 | **X** | attack shape, vibrato character, wavefold *(octave while calibrating)* |
 | **Y** | scale *(coarse tune while calibrating)* |
-| **Switch ↑** | **session parameters** — hold a pair, set Main, tap to commit |
+| **Switch ↑** | **session parameters** — hold a pair, set Main, release to commit |
 | **Switch —** | rest — the card is silent here |
 | **Switch ↓** | **the bow** — tap to strike, hold to sustain |
-| **Audio Out 1** | the tone, a sine |
-| **Audio Out 2** | the same tone, wavefolded as X rises |
+| **Audio Out 1** | the voice — wavefolded as X and the fold params rise |
+| **Audio Out 2** | the same, biased further: reedier, more even harmonics |
 | **CV Out 1** | 1V/oct pitch — the root is 0V, and it carries the vibrato |
 | **CV Out 2** | level — tracks what you hear |
 | **Pulse Out 1** | gate: high for the whole note, release included |
@@ -131,12 +131,19 @@ shorten what the peak bought, never stretch a note out past its own length.
 | fully CW | ~790ms — a swell | slow and wide, 3Hz / 50 cents |
 
 So the anticlockwise end is percussive and dramatic, the clockwise end slow and
-gentle in both respects at once. X also opens the wavefolder on Audio Out 2 and
-tilts the level up slightly.
+gentle in both respects at once. X also opens the **wavefolder** — on both audio
+outputs now — and tilts the level up slightly. How far that sweep reaches, where
+it starts from, and how hollow or full it sounds are the three fold parameters
+under switch up.
 
-**The three audio outputs are one oscillator.** Audio 1 is its sine, Audio 2 the
-same wave folded, Pulse 2 the same wave squared — all at identical pitch and
-phase, so they mix without comb filtering and the square always lines up.
+**The three audio outputs are one oscillator.** Audio 1 is the voice, Audio 2
+the same wave biased further into even harmonics, Pulse 2 the same wave
+squared — all at identical pitch and phase, so they mix without comb filtering
+and the square always lines up.
+
+Audio 1 used to be a bare sine, which meant every timbre control on the card
+was inaudible to a patch that only used the main output. It takes the fold
+now.
 
 ---
 
@@ -144,27 +151,31 @@ phase, so they mix without comb filtering and the square always lines up.
 
 **Switch up is a third stable position**, held for as long as you're in it —
 not a flick, not a timed gesture. Six parameters, one per **pair**: hold the
-pair, put Main where you want it, and **tap the switch** to commit.
+pair, put Main where you want it, and **release the pair** to commit.
 
 | Pair | Parameter | LED |
 |---|---|---|
 | **AB** | portamento glide time | 0 |
 | **AC** | vibrato depth | 1 |
-| **AD** | attack floor — how soft the fastest strike may be | 2 |
-| **BC** | vibrato rate | 3 |
-| **BD** | overall release length | 4 |
-| **CD** | wavefold amount | 5 |
+| **AD** | vibrato rate | 2 |
+| **BC** | fold amount — how far X's sweep reaches | 3 |
+| **BD** | fold baseline — how reedy at X=0 | 4 |
+| **CD** | fold bias — hollow (odd) through full (even) | 5 |
+
+**Four of the six shape the sound.** The voice is a single oscillator, so its
+timbre comes from what's done to that oscillator rather than from choosing
+between sources — and the wavefolder is what does it.
 
 The pairs are in the order the card already lists them everywhere else
 (AB, AC, AD, BC, BD, CD), so LED *n* is simply the *n*th pair.
 
 Values stick for the session, the same way tuning does.
 
-**The tap is what commits, and that isn't a safety rail — it's the only thing
-that can work.** The pair you're holding is what *names* the parameter, so
-until you're holding one there's nothing for Main's position to mean. Hold a
-pair and its LED starts following Main, so you can see the value you're aiming
-at before you take it; let go without tapping and nothing changed.
+**Releasing the pair is what commits.** That isn't a safety rail — it's the
+only thing that can work: the pair you're holding is what *names* the
+parameter, so until you're holding one there's nothing for Main's position to
+mean. Hold a pair and its LED starts following Main, so you can see the value
+you're aiming at before you let go.
 
 **On entry, all six values show at once** as the brightness of the six LEDs —
 the whole state of the sound, readable in a glance without touching anything.

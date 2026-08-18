@@ -5,6 +5,83 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v4.4.0 — the commit gesture could never have fired, and the timbre was on the wrong output
+
+> "the pair parameters - seem to show when I flip switch upwards - but
+> knob+pair sets the parameter - but the overview (when i release pair)
+> doesn't seem to reflect overview."
+>
+> "also make some of the parameters about sound /timbre"
+
+### The commit was unreachable
+
+v4.3.0 specified "hold the pair, set Main, TAP the switch to commit". The
+switch is a single THREE-POSITION control. Tapping DOWN means leaving UP,
+which leaves the mode — so `ParamTick()` stopped being called before the tap
+could ever be seen, and `paramQ12_` was never written. The overview looked
+wrong because the values genuinely had not changed.
+
+This was a design error, not a coding one, and it shipped because the spec
+was written without checking that the two positions it named could be
+occupied at once. Committing on RELEASE of the pair needs no third control
+and is the gesture the player is already making.
+
+It also deleted state rather than adding it: the "ignore whatever is held on
+entry" guard exists to stop an accidental hold writing a value, and with
+commit-on-release the worst an accidental hold can do is re-commit the value
+that was already there. Leaving UP still clears `paramHeld_`, so exiting the
+mode mid-edit does not commit on the way out.
+
+### The timbre was on an output most patches never hear
+
+Audio Out 1 was a bare sine. Every timbral control the card had acted on the
+wavefolder, and the wavefolder only fed Audio Out 2 — so a patch using just
+the main output heard none of it. That is why "make some of the parameters
+about sound" could not be answered by adding parameters: there was nothing
+for them to reach.
+
+The fold now drives both outputs, and four of the six parameters shape it:
+fold amount (how far X's sweep reaches), fold baseline (how reedy the voice
+is with X at zero), and fold bias (odd harmonics through to even). Attack
+floor and release length were dropped to make room — the least sound-like of
+the six, and release length was redundant with the Main-knob coupling that
+already does that job well.
+
+### Two things the models caught before hardware
+
+**Extra fold DEPTH on Out 2 broke the monotonic-brightness guarantee.** The
+first attempt at keeping the two outputs distinct gave Out 2 more folding.
+But `kFoldMax` is capped at 2048 precisely because brightness stops being
+monotonic above it, so this put Out 2 straight back in the dipping region —
+measured, its centroid went 3.46 -> 2.98 -> 3.08 across X's sweep, i.e.
+brighter, then duller, then brighter, which is the exact "reads as broken"
+failure the cap exists to prevent. Out 2 is separated by extra BIAS instead:
+measured zero dips anywhere, while driving the second harmonic from 8.8 to
+835. It is the reedier output, not the more-folded one.
+
+**The fold bias broke the DC blocker.** Biasing the wave before folding
+leaves a large offset, and because folding is nonlinear the DC that comes out
+is not the bias that went in — measured pre-blocker it swings from +534 to
+-825 across the fold's range, so there is nothing constant to subtract. At
+the old ~8Hz corner about 5% survived, leaving a permanent +43 counts on
+Audio Out 2 that was still there after six seconds. The pole moved to ~16Hz,
+which brings the worst case to 19 counts and, because the offset it removes
+was itself eating headroom, slightly INCREASES the amplitude of the lowest
+notes (C2 peak 3159 -> 3264) rather than costing them anything.
+
+### A tone control that did not earn its cycles
+
+A one-pole lowpass was built for the sixth slot and then removed. Measured,
+it moved the spectral centroid only 3.28 -> 3.60 while costing six times the
+level — a volume control that slightly dulled, because 6dB/octave barely
+reshapes a spectrum whose harmonics are already clustered. A steeper filter
+would have worked, but the folder is already this card's timbre engine and
+already moves the centroid 1.04 -> 3.60 monotonically, so the slot went to
+fold BASELINE instead. Deleting DSP that does not earn its place is worth
+recording alongside the DSP that stays.
+
+---
+
 ## v4.3.0 — the quiet end of the knob was a click, and six parameters on pairs
 
 > "In the bottom (most CCW) 1/5th ish of the main knob - the voice doesn't

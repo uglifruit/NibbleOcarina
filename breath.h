@@ -229,14 +229,8 @@ public:
 	/// job that raw position DOES is entirely Tick()'s call, based on gate_.
 	void SetKnob(int32_t knob, int32_t cvAdd);
 
-	/// Attack shape, 0..4095 from the X knob. 0 is a strike, 4095 a slow
-	/// swell. `floorShift` is the AD session parameter, raising the FAST end
-	/// only so the strike can be softened without costing X any travel.
-	void SetAttack(int32_t xKnob, uint8_t floorShift = kAttackShiftFast);
-
-	/// Release length trim in shifts, the BC session parameter. Applied when
-	/// the gate falls, not live — see SetGate().
-	void SetReleaseAdj(int8_t adj) { releaseAdj_ = adj; }
+	/// Attack shape, 0..4095 from the X knob. 0 is a strike, 4095 a slow swell.
+	void SetAttack(int32_t xKnob);
 
 	/// THE BOW. True while the switch is held or Pulse In 1 is high.
 	///
@@ -293,7 +287,6 @@ private:
 	int32_t  relFrom_     = 4095;   ///< Main's position when the bow lifted
 	int32_t  relRecipQ16_ = 16;     ///< Q16 reciprocal of relFrom_, for the trim
 
-	int8_t   releaseAdj_  = kReleaseAdjDefault;  ///< BC session parameter
 
 	int32_t  vibCents_    = 0;
 	int32_t  vibRateQ8_   = 0;

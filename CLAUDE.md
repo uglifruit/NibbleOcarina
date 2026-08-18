@@ -218,28 +218,59 @@ the same knob: if the base rate tracked Main during the tail as well as the
 trim, turning CCW would shorten the note twice over.
 
 **Switch UP is session-parameter editing, a third stable mode alongside
-DOWN.** SIX parameters, one per PAIR — hold the pair, set Main, TAP to
-commit. AB glide time, AC vibrato depth, AD attack floor, BC vibrato rate,
-BD release length, CD wavefold; LED *n* is the *n*th pair. Values persist for
-the session, RAM only, like tuning. Portamento's old on/off toggle is gone;
-every held note glides now, and AB is how fast.
+DOWN.** SIX parameters, one per PAIR — hold the pair, set Main, RELEASE the
+pair to commit. AB glide time, AC vibrato depth, AD vibrato rate, BC fold
+amount, BD fold baseline, CD fold bias; LED *n* is the *n*th pair. RAM only,
+like tuning. Portamento has no on/off; every held note glides, AB is how fast.
 
-**The tap commits, and that is forced by the gesture rather than chosen for
-safety.** The pair being held is what NAMES the parameter, so until one is
-held there is nothing Main's position could preview. This is also why no
-"ignore what was already held on entry" guard is needed any more (v4.2.0
-required one): an accidental hold does nothing, because only a deliberate tap
-writes. **In this mode the LEDs carry VALUES, not fingerings** — all six
-brightnesses on entry, then just the held pair's, following Main. Do not add
-button-press feedback here; it would fight the values for the same lights.
+**A gesture cannot name two positions of a one-position control.** v4.3.0
+specified "tap the switch to commit" for a mode entered by HOLDING the switch
+up — tapping down leaves the mode, so the commit was unreachable and no value
+was ever written. It shipped because the spec was never checked against the
+hardware having one switch. Commit is the RELEASE of the pair, which needs no
+second control. Leaving UP clears `paramHeld_` so exiting mid-edit does not
+commit on the way out.
+
+**The commit is on release because the pair NAMES the parameter** — until one
+is held there is nothing Main's position could preview. That is also why no
+"ignore what was already held on entry" guard is needed: the worst an
+accidental hold can do is re-commit the value already there.
+
+**In this mode the LEDs carry VALUES, not fingerings** — all six brightnesses
+on entry, then just the held pair's, following Main. Do not add button-press
+feedback here; it would fight the values for the same lights.
 
 A note already releasing keeps fading out untouched (`breath_.Tick()` always
 runs); switch DOWN and Pulse In 1 are both forced low here so nothing NEW can
 strike while adjusting.
 
-**`kReleaseShiftMax + kReleaseAdjMax` must never exceed `kEnvFrac`.** The
-release-length parameter's +1 ceiling is that bound, not taste — exceed it
-and the v4.2.1 collapse returns. `breathsim.py` asserts it at every setting.
+**The wavefolder drives BOTH audio outputs, and it is the card's only timbre
+engine.** Audio Out 1 was a bare sine until v4.4, which meant every timbral
+control acted on Out 2 alone and was inaudible to a patch using just the main
+output. Four of the six session parameters shape the fold, because a single
+oscillator has nowhere else for timbre to come from.
+
+**Out 2 is separated from Out 1 by BIAS, never by extra fold DEPTH.**
+`kFoldMax` caps the fold at the top of its monotonic region; anything added
+on top puts an output back where brightness DIPS as X rises (measured
+3.46 → 2.98 → 3.08), which is the "brightens then dulls reads as broken"
+failure the cap exists to prevent. Bias changes harmonic character instead —
+measured, second harmonic 8.8 → 835 with zero dips. `flutesim.py` asserts
+monotonicity on both outputs now, which is what caught this.
+
+**Fold bias defeats a slow DC blocker.** Folding is nonlinear, so the DC out
+is not the bias in — measured pre-blocker it swings +534 to −825 across the
+fold's range, and there is nothing constant to subtract. At the old ~8Hz
+corner ~5% survived as a permanent +43 counts on Out 2. `kDcPoleQ15` is
+~16Hz for this reason; it also raises low-note amplitude slightly rather than
+costing it, because the offset was eating headroom.
+
+**A one-pole is not a tone control on this voice.** One was built and
+removed: it moved the spectral centroid 3.28 → 3.60 while costing six times
+the level, because 6dB/octave barely reshapes a spectrum whose harmonics are
+already clustered. It read as a volume control that slightly dulled. If a
+real filter is ever wanted here it needs to be at least two poles; otherwise
+use the folder, which already spans 1.04 → 3.60 monotonically.
 
 **No switch position that is held may carry a TIMED gesture layered on top of
 normal play.** This has now cost two bugs: switch-up as a held legato mode

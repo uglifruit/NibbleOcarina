@@ -31,13 +31,6 @@ RELEASE_SHIFT_MIN = 7
 RELEASE_SHIFT_MAX = 11
 RELEASE_TRIM_SHIFT = 7
 RELEASE_SHIFT_FLOOR = 2
-# BC session parameter. Max is +1 and that is a HARD ceiling:
-# RELEASE_SHIFT_MAX + RELEASE_ADJ_MAX must never exceed ENV_FRAC.
-RELEASE_ADJ_MIN = -4
-RELEASE_ADJ_MAX = 1
-RELEASE_ADJ_DEFAULT = 0
-ATTACK_FLOOR_MIN = 2
-ATTACK_FLOOR_MAX = 8
 ENV_FLOOR = 1
 # MUST be >= RELEASE_SHIFT_MAX, or the forced `step = 1` turns the bottom of
 # the release into a linear-in-amplitude collapse that accelerates in dB.
@@ -85,7 +78,6 @@ class Breath:
         self.rel_base = RELEASE_SHIFT_MIN
         self.rel_from = 4095
         self.rel_recip_q16 = 16
-        self.release_adj = RELEASE_ADJ_DEFAULT
         self.vib_cents = 0
         self.vib_rate_q8 = 0
         self.vib_cents_max = 0
@@ -112,15 +104,10 @@ class Breath:
         sm = min(4095, (n * inner) >> 12)
         self.peak = min(4095, sm + ((sm * (4096 - sm)) >> 12))
 
-    def set_attack(self, x, floor_shift=ATTACK_SHIFT_FAST):
+    def set_attack(self, x):
         x = max(0, min(4095, x))
-        # floor_shift is the AD session parameter: it raises the FAST end
-        # only, so softening the strike costs none of X's travel.
-        fast = max(ATTACK_SHIFT_FAST, min(ATTACK_SHIFT_SLOW, floor_shift))
-        self.attack = fast + (((ATTACK_SHIFT_SLOW - fast) * x) >> 12)
-
-    def set_release_adj(self, adj):
-        self.release_adj = adj
+        self.attack = ATTACK_SHIFT_FAST + (
+            ((ATTACK_SHIFT_SLOW - ATTACK_SHIFT_FAST) * x) >> 12)
 
     def set_gate(self, on):
         self.struck = on and not self.gate
@@ -131,11 +118,9 @@ class Breath:
         if not on and self.gate:
             base = RELEASE_SHIFT_MIN + (
                 ((RELEASE_SHIFT_MAX - RELEASE_SHIFT_MIN) * self.effort) >> 12)
-            # The BC session parameter shifts the whole coupling, bounded so
-            # base can never exceed ENV_FRAC -- see kReleaseAdjMax.
-            base = max(RELEASE_SHIFT_FLOOR, min(ENV_FRAC,
-                                                base + self.release_adj))
-            self.rel_base = base
+            # Clamped against ENV_FRAC, the bound that actually matters -- a
+            # release shift above it brings back the v4.2.1 collapse.
+            self.rel_base = max(RELEASE_SHIFT_FLOOR, min(ENV_FRAC, base))
             # The trim is measured RELATIVE to where Main sat when the bow
             # lifted -- absolute pre-truncated every quietly-played note.
             self.rel_from = self.main_raw
@@ -620,73 +605,6 @@ def test_release_is_latched_not_live():
                half > full / 30, f"{half:.0f}ms vs {full:.0f}ms")
 
 
-def test_attack_floor():
-    """The AD parameter softens X's fast end without costing X any travel.
-
-    Raising the floor must make the strike gentler while leaving the slow
-    end where it was, so the knob keeps its whole range of shapes.
-    """
-    print("attack floor (AD parameter)")
-    for floor in (ATTACK_FLOOR_MIN, 5, ATTACK_FLOOR_MAX):
-        t = []
-        for x in (0, 4095):
-            b = Breath()
-            b.set_knob(4095)
-            b.set_attack(x, floor)
-            out = play(b, 30000, 30000)
-            t90 = next(i for i in range(len(out))
-                       if out[i] > b.peak * 9 // 10)
-            t.append(ms(t90))
-        print(f"        floor {floor}: X CCW {t[0]:6.1f}ms, "
-              f"X CW {t[1]:6.1f}ms")
-        if floor == ATTACK_FLOOR_MIN:
-            fast_at_min, slow_at_min = t
-        else:
-            check_true(f"floor {floor} softens the strike",
-                       t[0] > fast_at_min * 2, f"{t[0]:.0f}ms")
-            check_true(f"floor {floor} leaves the slow end alone",
-                       abs(t[1] - slow_at_min) < slow_at_min * 0.25,
-                       f"{t[1]:.0f}ms vs {slow_at_min:.0f}ms")
-
-
-def test_release_adj():
-    """The BC parameter shifts the whole release coupling, within bounds.
-
-    And -- the part that matters -- its ceiling must never let the release
-    shift exceed ENV_FRAC, or the accelerating collapse that took four
-    attempts to find comes straight back.
-    """
-    print("release adjust (BC parameter)")
-
-    def tail(adj, knob=4095):
-        b = Breath()
-        b.set_knob(knob)
-        b.set_attack(0)
-        b.set_release_adj(adj)
-        b.set_gate(True)
-        for _ in range(600):
-            b.tick()
-        b.set_gate(False)
-        n = 0
-        while b.env > 0 and n < 800000:
-            b.tick()
-            n += 1
-        return ms(n), b.rel_base
-
-    times = []
-    for adj in (RELEASE_ADJ_MIN, 0, RELEASE_ADJ_MAX):
-        t, base = tail(adj)
-        times.append(t)
-        print(f"        adj {adj:+d}: rel_base {base:2d} -> {t:8.1f} ms")
-        check_true(f"adj {adj:+d} keeps rel_base within ENV_FRAC",
-                   base <= ENV_FRAC, f"rel_base {base} vs ENV_FRAC {ENV_FRAC}")
-
-    check_true("a longer setting really is longer", times[2] > times[1],
-               f"{times[2]:.0f} > {times[1]:.0f}")
-    check_true("and a shorter setting really is shorter",
-               times[0] < times[1], f"{times[0]:.0f} < {times[1]:.0f}")
-
-
 def test_attack_shape():
     print("attack shape from X")
     times = []
@@ -799,8 +717,6 @@ def main():
     test_louder_lasts_longer()
     test_the_whole_knob_makes_notes()
     test_release_is_latched_not_live()
-    test_attack_floor()
-    test_release_adj()
     test_attack_shape()
     test_level_curve()
     test_curve_is_monotonic()
