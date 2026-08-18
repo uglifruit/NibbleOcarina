@@ -13,6 +13,10 @@ void Breath::Init()
 	peak_ = effort_ = env_ = mainRaw_ = 0;
 	gate_ = struck_ = false;
 	attack_ = kAttackShiftFast;
+	relBase_ = kReleaseShiftMin;
+	relFrom_ = 4095;
+	relRecipQ16_ = 16;
+	releaseAdj_ = kReleaseAdjDefault;
 	vibCents_ = vibRateQ8_ = vibCentsMax_ = 0;
 	vibPhase_ = 0;
 }
@@ -81,14 +85,21 @@ void Breath::SetKnob(int32_t knob, int32_t cvAdd)
 	if (peak_ > 4095) peak_ = 4095;
 }
 
-void Breath::SetAttack(int32_t xKnob)
+void Breath::SetAttack(int32_t xKnob, uint8_t floorShift)
 {
 	if (xKnob < 0) xKnob = 0;
 	if (xKnob > 4095) xKnob = 4095;
-	// X sweeps the attack from a strike to a slow swell.
+
+	// X sweeps the attack from a strike to a slow swell. `floorShift` is the
+	// AD session parameter: it raises the FAST end only, so softening the
+	// strike costs none of X's travel — the knob keeps its whole range of
+	// shapes and simply starts them gentler.
+	uint8_t fast = floorShift;
+	if (fast < kAttackShiftFast) fast = kAttackShiftFast;
+	if (fast > kAttackShiftSlow) fast = kAttackShiftSlow;
+
 	attack_ = static_cast<uint8_t>(
-		kAttackShiftFast +
-		(((kAttackShiftSlow - kAttackShiftFast) * xKnob) >> 12));
+		fast + (((kAttackShiftSlow - fast) * xKnob) >> 12));
 }
 
 void Breath::SetGate(bool on)
@@ -97,6 +108,43 @@ void Breath::SetGate(bool on)
 	// re-strike, which is what lets a held note be swelled and re-fingered
 	// without ever re-attacking.
 	struck_ = (on && !gate_);
+
+	// LATCH the release length on the FALLING edge, from effort as it stood
+	// the instant the bow left the string. It must not keep tracking the knob
+	// afterwards: Main's job during a release is the live trim
+	// (kReleaseTrimShift), and if the base rate followed the knob too then
+	// turning CCW would shorten the tail twice over — once through a falling
+	// effort and again through a rising trim. One knob, one effect.
+	if (!on && gate_)
+	{
+		int32_t base = kReleaseShiftMin +
+			(((kReleaseShiftMax - kReleaseShiftMin) * effort_) >> 12);
+
+		// The BC session parameter shifts the whole coupling up or down. Its
+		// ceiling is bounded so base can never exceed kEnvFrac — see
+		// kReleaseAdjMax, and kEnvFrac's comment for what happens if it does.
+		base += releaseAdj_;
+		if (base < kReleaseShiftFloor) base = kReleaseShiftFloor;
+		if (base > kEnvFrac)           base = kEnvFrac;
+		relBase_ = static_cast<uint8_t>(base);
+
+		// The trim is measured RELATIVE to where Main sat when the bow
+		// lifted, not from the top of the knob. Absolute would mean a note
+		// played quietly — knob already near CCW — arrives with the trim
+		// already at maximum and gets truncated before the player has asked
+		// for anything. "Turn it down to cut the note short" only means
+		// anything as a change from wherever you were.
+		relFrom_ = mainRaw_;
+
+		// Q16 reciprocal of that travel, so Tick() can scale `drop` into Q12
+		// with a multiply instead of a divide. Computed once per note, off
+		// the audio path; the divisor is a runtime value so this genuinely
+		// has to be a division, but it happens on the falling edge only.
+		relRecipQ16_ = (relFrom_ > 0)
+			? static_cast<int32_t>((4096 << 16) / relFrom_)
+			: 0;
+	}
+
 	gate_ = on;
 }
 
@@ -147,18 +195,26 @@ void Breath::Tick()
 		// kEnvFrac in breath.h for why both of those were tried and both made
 		// the ending worse rather than better.
 		//
-		// BASE rate comes from the note's own peak — loud notes ring on, quiet
-		// ones are short, which is what makes Main feel like dynamics while it
-		// is setting peak (kReleaseShiftMin/Max). MAIN'S SECOND JOB: once the
-		// gate has fallen, that peak-setting job is done, so the same physical
-		// position now TRIMS this rate live, every tick, on top — fully CW
-		// leaves it untouched, CCW shortens it toward a truncate. See
-		// kReleaseTrimShift.
-		const uint8_t trim = static_cast<uint8_t>(
-			(kReleaseTrimShift * (4096 - mainRaw_)) >> 12);
-		uint8_t rel = static_cast<uint8_t>(
-			kReleaseShiftMin +
-			(((kReleaseShiftMax - kReleaseShiftMin) * peak_) >> 12));
+		// BASE rate rises with EFFORT — loud notes ring on, quiet ones are
+		// short, which is what makes Main feel like dynamics while it is
+		// setting peak (kReleaseShiftMin/Max). Effort and NOT peak: peak is
+		// the S-curve, whose flat foot pinned the whole bottom fifth of the
+		// knob to the minimum shift and made every note there a 4ms click.
+		// MAIN'S SECOND JOB: once the gate has fallen, that peak-setting job
+		// is done, so the same physical position now TRIMS this rate live,
+		// every tick, on top — fully CW leaves it untouched, CCW shortens it
+		// toward a truncate. See kReleaseTrimShift.
+		// How far Main has been turned DOWN since the bow lifted, scaled by a
+		// reciprocal worked out once at the falling edge — see SetGate().
+		// A runtime divide here would be a libgcc call on this chip, on the
+		// sample that already carries the heaviest control work.
+		int32_t drop = relFrom_ - mainRaw_;
+		if (drop < 0) drop = 0;
+		uint8_t trim = static_cast<uint8_t>(
+			(kReleaseTrimShift * ((drop * relRecipQ16_) >> 16)) >> 12);
+		if (trim > kReleaseTrimShift) trim = kReleaseTrimShift;
+
+		uint8_t rel = relBase_;
 		rel = (rel > trim + kReleaseShiftFloor)
 		          ? static_cast<uint8_t>(rel - trim)
 		          : kReleaseShiftFloor;

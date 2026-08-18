@@ -27,10 +27,17 @@ BREATH_THRESH = 60
 
 ATTACK_SHIFT_FAST = 2
 ATTACK_SHIFT_SLOW = 11
-RELEASE_SHIFT_MIN = 6
-RELEASE_SHIFT_MAX = 10
-RELEASE_TRIM_SHIFT = 5
+RELEASE_SHIFT_MIN = 7
+RELEASE_SHIFT_MAX = 11
+RELEASE_TRIM_SHIFT = 7
 RELEASE_SHIFT_FLOOR = 2
+# BC session parameter. Max is +1 and that is a HARD ceiling:
+# RELEASE_SHIFT_MAX + RELEASE_ADJ_MAX must never exceed ENV_FRAC.
+RELEASE_ADJ_MIN = -4
+RELEASE_ADJ_MAX = 1
+RELEASE_ADJ_DEFAULT = 0
+ATTACK_FLOOR_MIN = 2
+ATTACK_FLOOR_MAX = 8
 ENV_FLOOR = 1
 # MUST be >= RELEASE_SHIFT_MAX, or the forced `step = 1` turns the bottom of
 # the release into a linear-in-amplitude collapse that accelerates in dB.
@@ -75,6 +82,10 @@ class Breath:
         self.gate = False
         self.struck = False
         self.attack = ATTACK_SHIFT_FAST
+        self.rel_base = RELEASE_SHIFT_MIN
+        self.rel_from = 4095
+        self.rel_recip_q16 = 16
+        self.release_adj = RELEASE_ADJ_DEFAULT
         self.vib_cents = 0
         self.vib_rate_q8 = 0
         self.vib_cents_max = 0
@@ -101,13 +112,35 @@ class Breath:
         sm = min(4095, (n * inner) >> 12)
         self.peak = min(4095, sm + ((sm * (4096 - sm)) >> 12))
 
-    def set_attack(self, x):
+    def set_attack(self, x, floor_shift=ATTACK_SHIFT_FAST):
         x = max(0, min(4095, x))
-        self.attack = ATTACK_SHIFT_FAST + (
-            ((ATTACK_SHIFT_SLOW - ATTACK_SHIFT_FAST) * x) >> 12)
+        # floor_shift is the AD session parameter: it raises the FAST end
+        # only, so softening the strike costs none of X's travel.
+        fast = max(ATTACK_SHIFT_FAST, min(ATTACK_SHIFT_SLOW, floor_shift))
+        self.attack = fast + (((ATTACK_SHIFT_SLOW - fast) * x) >> 12)
+
+    def set_release_adj(self, adj):
+        self.release_adj = adj
 
     def set_gate(self, on):
         self.struck = on and not self.gate
+        # Latch the release length on the FALLING edge, from EFFORT (linear),
+        # not peak (the S-curve, whose flat foot silenced the bottom fifth of
+        # the knob). Latched so Main's live trim during the tail is the only
+        # thing that varies -- see set_gate() in breath.cpp.
+        if not on and self.gate:
+            base = RELEASE_SHIFT_MIN + (
+                ((RELEASE_SHIFT_MAX - RELEASE_SHIFT_MIN) * self.effort) >> 12)
+            # The BC session parameter shifts the whole coupling, bounded so
+            # base can never exceed ENV_FRAC -- see kReleaseAdjMax.
+            base = max(RELEASE_SHIFT_FLOOR, min(ENV_FRAC,
+                                                base + self.release_adj))
+            self.rel_base = base
+            # The trim is measured RELATIVE to where Main sat when the bow
+            # lifted -- absolute pre-truncated every quietly-played note.
+            self.rel_from = self.main_raw
+            self.rel_recip_q16 = ((4096 << 16) // self.rel_from) \
+                if self.rel_from > 0 else 0
         self.gate = on
 
     def set_vibrato(self, rate_q8, cents_q4):
@@ -151,9 +184,11 @@ class Breath:
             # quiet ones are short -- then Main's SECOND JOB trims that live,
             # every tick, once the gate has fallen: fully CW leaves it
             # untouched, CCW shortens it toward a truncate.
-            trim = (RELEASE_TRIM_SHIFT * (4096 - self.main_raw)) >> 12
-            rel = RELEASE_SHIFT_MIN + (
-                ((RELEASE_SHIFT_MAX - RELEASE_SHIFT_MIN) * self.peak) >> 12)
+            drop = max(0, self.rel_from - self.main_raw)
+            trim = min(RELEASE_TRIM_SHIFT,
+                       (RELEASE_TRIM_SHIFT
+                        * ((drop * self.rel_recip_q16) >> 16)) >> 12)
+            rel = self.rel_base
             rel = (rel - trim) if rel > trim + RELEASE_SHIFT_FLOOR \
                 else RELEASE_SHIFT_FLOOR
             step = self.env >> rel
@@ -499,6 +534,159 @@ def test_louder_lasts_longer():
                f"{times[0][2]:.0f}ms -> {times[-1][2]:.0f}ms")
 
 
+def test_the_whole_knob_makes_notes():
+    """EVERY position of Main that is above silence must give a real NOTE.
+
+    Reported from hardware: "in the bottom (most CCW) 1/5th ish of the main
+    knob - the voice doesn't sound!" It was sounding, for 4 to 8 milliseconds
+    -- which is a click, not a note, and at that level is simply not heard.
+
+    The cause was coupling the release shift to PEAK, the S-curve. That curve
+    is deliberately flat near zero because that is the right shape for
+    LOUDNESS, so across the whole bottom fifth of the travel peak stayed
+    under 1/8 of full scale and pinned the release shift to its minimum.
+    Release is now taken from EFFORT, the linear knob position, which is what
+    effort is for.
+
+    This asserts the floor directly: nothing audible may be shorter than a
+    note, and the coupling must still be monotonic so louder still rings on
+    longer.
+    """
+    print("the whole knob makes notes")
+    rows = []
+    for pct in (3, 5, 10, 15, 20, 30, 50, 75, 100):
+        b = Breath()
+        b.set_knob(int(4095 * pct / 100))
+        b.set_attack(0)
+        b.set_gate(True)
+        for _ in range(600):
+            b.tick()
+        b.set_gate(False)
+        n = 0
+        while b.env > 0 and n < 400000:
+            b.tick()
+            n += 1
+        rows.append((pct, b.peak, ms(n)))
+        print(f"        knob {pct:3d}%  peak {b.peak:4d} -> release {ms(n):8.1f} ms")
+
+    # 3% is right at the edge of audibility and is allowed to be brief; from
+    # 5% up, every note must last long enough to read as a note.
+    worst = min(t for pct, _, t in rows if pct >= 5)
+    check_true("no audible position gives a click instead of a note",
+               worst > 100, f"shortest is {worst:.0f}ms")
+
+    times = [t for _, _, t in rows]
+    check_true("and louder still lasts longer, all the way up",
+               all(times[i] >= times[i - 1] for i in range(1, len(times))),
+               "")
+
+
+def test_release_is_latched_not_live():
+    """The release length is fixed when the bow lifts; only the trim moves.
+
+    Both are driven by Main. If the base rate kept following the knob during
+    the tail as well as the trim, turning CCW would shorten the note twice
+    over through two different mechanisms -- one knob with one effect is the
+    whole point of the trim.
+    """
+    print("release length is latched at the falling edge")
+
+    def tail_ms(knob_after_release):
+        b = Breath()
+        b.set_knob(4095)
+        b.set_attack(0)
+        b.set_gate(True)
+        for _ in range(600):
+            b.tick()
+        b.set_gate(False)
+        # Only the TRIM should respond to this, not the base rate.
+        b.set_knob(knob_after_release)
+        n = 0
+        while b.env > 0 and n < 400000:
+            b.tick()
+            n += 1
+        return ms(n)
+
+    full = tail_ms(4095)
+    # Trim alone at ~half travel removes about half of kReleaseTrimShift.
+    half = tail_ms(2048)
+    print(f"        released at full Main: {full:.0f}ms; "
+          f"knob to half during tail: {half:.0f}ms")
+    check_true("the trim still shortens the tail", half < full,
+               f"{half:.0f} < {full:.0f}")
+    # If effort were still live, dropping the knob would ALSO drop the base
+    # shift and the tail would collapse far harder than the trim alone.
+    check_true("but not twice over — the base rate stayed latched",
+               half > full / 30, f"{half:.0f}ms vs {full:.0f}ms")
+
+
+def test_attack_floor():
+    """The AD parameter softens X's fast end without costing X any travel.
+
+    Raising the floor must make the strike gentler while leaving the slow
+    end where it was, so the knob keeps its whole range of shapes.
+    """
+    print("attack floor (AD parameter)")
+    for floor in (ATTACK_FLOOR_MIN, 5, ATTACK_FLOOR_MAX):
+        t = []
+        for x in (0, 4095):
+            b = Breath()
+            b.set_knob(4095)
+            b.set_attack(x, floor)
+            out = play(b, 30000, 30000)
+            t90 = next(i for i in range(len(out))
+                       if out[i] > b.peak * 9 // 10)
+            t.append(ms(t90))
+        print(f"        floor {floor}: X CCW {t[0]:6.1f}ms, "
+              f"X CW {t[1]:6.1f}ms")
+        if floor == ATTACK_FLOOR_MIN:
+            fast_at_min, slow_at_min = t
+        else:
+            check_true(f"floor {floor} softens the strike",
+                       t[0] > fast_at_min * 2, f"{t[0]:.0f}ms")
+            check_true(f"floor {floor} leaves the slow end alone",
+                       abs(t[1] - slow_at_min) < slow_at_min * 0.25,
+                       f"{t[1]:.0f}ms vs {slow_at_min:.0f}ms")
+
+
+def test_release_adj():
+    """The BC parameter shifts the whole release coupling, within bounds.
+
+    And -- the part that matters -- its ceiling must never let the release
+    shift exceed ENV_FRAC, or the accelerating collapse that took four
+    attempts to find comes straight back.
+    """
+    print("release adjust (BC parameter)")
+
+    def tail(adj, knob=4095):
+        b = Breath()
+        b.set_knob(knob)
+        b.set_attack(0)
+        b.set_release_adj(adj)
+        b.set_gate(True)
+        for _ in range(600):
+            b.tick()
+        b.set_gate(False)
+        n = 0
+        while b.env > 0 and n < 800000:
+            b.tick()
+            n += 1
+        return ms(n), b.rel_base
+
+    times = []
+    for adj in (RELEASE_ADJ_MIN, 0, RELEASE_ADJ_MAX):
+        t, base = tail(adj)
+        times.append(t)
+        print(f"        adj {adj:+d}: rel_base {base:2d} -> {t:8.1f} ms")
+        check_true(f"adj {adj:+d} keeps rel_base within ENV_FRAC",
+                   base <= ENV_FRAC, f"rel_base {base} vs ENV_FRAC {ENV_FRAC}")
+
+    check_true("a longer setting really is longer", times[2] > times[1],
+               f"{times[2]:.0f} > {times[1]:.0f}")
+    check_true("and a shorter setting really is shorter",
+               times[0] < times[1], f"{times[0]:.0f} < {times[1]:.0f}")
+
+
 def test_attack_shape():
     print("attack shape from X")
     times = []
@@ -609,6 +797,10 @@ def main():
     test_hold_sustains()
     test_swell()
     test_louder_lasts_longer()
+    test_the_whole_knob_makes_notes()
+    test_release_is_latched_not_live()
+    test_attack_floor()
+    test_release_adj()
     test_attack_shape()
     test_level_curve()
     test_curve_is_monotonic()

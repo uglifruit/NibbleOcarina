@@ -21,12 +21,16 @@
 //   X            attack shape + vibrato character + fold  (OCTAVE during cal)
 //   Y            scale                       (COARSE TUNE during calibration)
 //
-//   Switch UP    SESSION PARAMETERS. Press A/B/C/D then turn Main to set:
-//                  A portamento glide time   B vibrato depth
-//                  C wavefold amount         D reserved
-//                Held (not momentary), a third stable position alongside
-//                DOWN — see ParamTick(). A note already releasing keeps
-//                ringing; nothing here re-fingers or re-strikes it.
+//   Switch UP    SESSION PARAMETERS. Six of them, one per PAIR. Hold the
+//                pair, put Main where you want it, TAP to commit. LED n is
+//                the nth pair, in the card's usual order:
+//                  AB glide time    AC vibrato depth  AD attack floor
+//                  BC vibrato rate  BD release length CD wavefold
+//                On entry all six show at once as LED brightness; holding a
+//                pair leaves only its LED lit, tracking Main. Held (not
+//                momentary), a third stable position alongside DOWN — see
+//                ParamTick(). A note already releasing keeps ringing;
+//                nothing here re-fingers or re-strikes it.
 //   Switch MID   rest position
 //   Switch DOWN  THE BOW — tap for a struck note, hold to sustain
 //
@@ -292,10 +296,12 @@ private:
 
 		if (editingParams)
 		{
-			// Buttons select a PARAMETER here, not a pitch — see ParamTick().
-			// combo_/pitch are untouched, exactly as during a release tail:
-			// whatever is sounding keeps sounding at its own note.
-			ParamTick(settled, idx);
+			// A held PAIR names a parameter here, not a pitch — see
+			// ParamTick(). combo_/pitch are untouched, exactly as during a
+			// release tail: whatever is sounding keeps sounding at its own
+			// note. Current() and not the settled edge, because "hold this
+			// pair" is a state rather than an event.
+			ParamTick(levels_.Current());
 		}
 		else
 		{
@@ -348,18 +354,23 @@ private:
 			// Breath's call, based on its own gate state. See breath.h.
 			breath_.SetKnob(KnobVal(Knob::Main), mainCv);
 		}
-		breath_.SetAttack(xNow_);
+		// X sets the attack shape; the AD parameter raises its FLOOR, so the
+		// anticlockwise end can be softened from a 3ms strike without giving
+		// up any of X's travel.
+		breath_.SetAttack(xNow_, AttackFloor());
+		breath_.SetReleaseAdj(ReleaseAdj());
 
 		breath_.SetGate(gate);
 
 		// Vibrato comes from BOTH knobs: Main sets how much, X sets what kind.
 		// Set before Tick() so the oscillator advances with this tick's values.
-		// param B (vibMulQ8_) scales the depth ON TOP of that, session-wide —
-		// 0 silences vibrato outright regardless of Main/X, 256 (default) is
-		// unchanged from pre-4.2 behaviour.
+		// The CD and BC parameters scale depth and rate on top, session-wide —
+		// depth 0 silences vibrato outright regardless of Main/X, and both sit
+		// at 100% by default, i.e. unchanged from pre-4.3 behaviour.
 		const Vibrato vib = VibratoFor(breath_.EffortQ12(), xNow_);
-		const int32_t vibCentsQ4 = (vib.centsQ4 * vibMulQ8_) >> 8;
-		breath_.SetVibrato(vib.rateQ8, vibCentsQ4);
+		const int32_t vibCentsQ4 = (vib.centsQ4 * VibDepthMulQ8()) >> 8;
+		const int32_t vibRateQ8  = (vib.rateQ8  * VibRateMulQ8())  >> 8;
+		breath_.SetVibrato(vibRateQ8, vibCentsQ4);
 
 		breath_.Tick();
 
@@ -377,10 +388,10 @@ private:
 		// whole note rather than just its start.
 		PulseOut1(breath_.Sounding());
 
-		// param C (foldMulQ8_) scales the fold amount X asked for, same shape
+		// The AC parameter scales the fold amount X asked for, same shape
 		// as the vibrato multiplier above — 0 keeps Audio Out 2 a plain sine
 		// regardless of X, 256 (default) is unchanged.
-		int32_t fold = (FoldFor(xNow_) * foldMulQ8_) >> 8;
+		int32_t fold = (FoldFor(xNow_) * FoldMulQ8()) >> 8;
 		if (fold < 0) fold = 0;
 		voice_.SetFold(fold);
 
@@ -410,20 +421,12 @@ private:
 	/// also used for normal play. UP overlays nothing; it IS its own mode,
 	/// the same way DOWN already is the bow.
 	///
-	/// Entering UP must ignore whatever fingering happens to be held already
-	/// — the player did not choose that combo for this purpose, it is just
-	/// wherever their fingers were. So the edge into UP disarms selection;
-	/// ControlTick()'s param-edit branch only arms on the NEXT settled change
-	/// to a fresh single (A/B/C/D).
+	/// Whatever fingering happens to be held on entry needs no special
+	/// handling any more: a held pair only NAMES a parameter, and nothing is
+	/// written until a deliberate tap. An accidental hold does nothing, so
+	/// there is no entry edge to detect and no arming state to keep.
 	void __not_in_flash_func(ReadSwitch)()
 	{
-		const bool up = (SwitchVal() == Switch::Up);
-		if (up && !upLast_)
-		{
-			paramSel_   = kComboNone;
-			paramArmed_ = false;
-		}
-		upLast_ = up;
 
 		// The capture tap for calibration is the same switch, pressed. It fires
 		// on the PRESS edge, not the release: release-firing never
@@ -434,51 +437,75 @@ private:
 		downLast_ = down;
 	}
 
-	/// Switch-UP mode: buttons select a session parameter, Main sets it.
-	///
-	/// `settled`/`idx` are this tick's levels_.Step() result, already read by
-	/// ControlTick() — passed in rather than re-read, since Step() advances
-	/// state and must only run once per tick.
-	///
-	/// Entering UP disarms selection (see ReadSwitch()) so whatever fingering
-	/// happened to be held is ignored; this only arms on the FIRST settled
-	/// change afterward that lands on a fresh single (A/B/C/D). Pairs,
-	/// triples and the quad don't select anything — they aren't one of the
-	/// four parameters, so treating them as a selection would be a wrong
-	/// answer rather than simply an unused gesture.
-	void __not_in_flash_func(ParamTick)(bool settled, int8_t idx)
-	{
-		if (settled && idx >= kA && idx <= kD)
-		{
-			paramSel_   = idx;
-			paramArmed_ = true;
-		}
+	// --- session parameter accessors ----------------------------------------
+	//
+	// Each parameter is STORED as a knob position and converted here, so the
+	// stored value means the same thing as the LED brightness showing it and
+	// every range lives in exactly one place.
 
-		if (!paramArmed_ || paramSel_ == kComboNone) return;
+	/// Linear map of a stored 0..4095 position onto [lo, hi].
+	static int32_t ParamMap(int32_t q12, int32_t lo, int32_t hi)
+	{
+		return lo + (((hi - lo) * q12) >> 12);
+	}
+
+	uint8_t GlideShift() const
+	{
+		return static_cast<uint8_t>(ParamMap(paramQ12_[kParamGlide],
+			kGlideShiftMin, kGlideShiftMax));
+	}
+	int32_t VibDepthMulQ8() const
+	{
+		return ParamMap(paramQ12_[kParamVibDep],
+			kVibMulQ8Min, kVibMulQ8Max);
+	}
+	int32_t VibRateMulQ8() const
+	{
+		return ParamMap(paramQ12_[kParamVibRate],
+			kVibRateMulQ8Min, kVibRateMulQ8Max);
+	}
+	int32_t FoldMulQ8() const
+	{
+		return ParamMap(paramQ12_[kParamFold],
+			kFoldMulQ8Min, kFoldMulQ8Max);
+	}
+	uint8_t AttackFloor() const
+	{
+		return static_cast<uint8_t>(ParamMap(paramQ12_[kParamAttack],
+			kAttackFloorMin, kAttackFloorMax));
+	}
+	int8_t ReleaseAdj() const
+	{
+		return static_cast<int8_t>(ParamMap(paramQ12_[kParamRelease],
+			kReleaseAdjMin, kReleaseAdjMax));
+	}
+
+	/// Switch-UP mode: a held PAIR names a parameter, Main is its value, and
+	/// a TAP commits it.
+	///
+	/// `idx` is levels_.Current() — the pair being held right now, read
+	/// rather than edge-detected, because "hold this pair" is a state and not
+	/// an event. ControlTick() has already advanced levels_ this tick.
+	///
+	/// Committing on the tap rather than live is forced by the gesture, not a
+	/// safety rail: the pair is what NAMES the parameter, so until one is
+	/// held there is nothing Main's position could be previewing. While a
+	/// pair IS held, its LED tracks Main so the value being aimed at is
+	/// visible before it is taken.
+	///
+	/// Nothing here needs the "ignore what was already pressed on entry"
+	/// guard the single-button version had: an unintended hold does nothing
+	/// on its own, since only a deliberate tap ever writes a value.
+	void __not_in_flash_func(ParamTick)(int8_t idx)
+	{
+		paramHeld_ = ParamOfCombo(idx);
+
+		if (paramHeld_ == kParamNone || !tapped_) return;
 
 		int32_t knob = KnobVal(Knob::Main);
 		if (knob < 0) knob = 0;
 		if (knob > 4095) knob = 4095;
-
-		switch (paramSel_)
-		{
-		case kA:   // portamento glide time — CCW is fast, CW is slow, matching
-		           // every other "CCW = less/faster" convention on this card.
-			glideShift_ = static_cast<uint8_t>(kGlideShiftMin +
-				(((kGlideShiftMax - kGlideShiftMin) * knob) >> 12));
-			break;
-		case kB:   // vibrato depth multiplier
-			vibMulQ8_ = kVibMulQ8Min +
-				(((kVibMulQ8Max - kVibMulQ8Min) * knob) >> 12);
-			break;
-		case kC:   // wavefold multiplier
-			foldMulQ8_ = kFoldMulQ8Min +
-				(((kFoldMulQ8Max - kFoldMulQ8Min) * knob) >> 12);
-			break;
-		case kD:   // reserved — no-op
-		default:
-			break;
-		}
+		paramQ12_[paramHeld_] = knob;
 	}
 
 	/// Sets the target pitch. Called from ControlTick() in two situations
@@ -520,7 +547,7 @@ private:
 	{
 		const int32_t vibQ4 = breath_.VibratoCentsQ4();
 		// Portamento's on/off toggle is gone: every held note glides on a
-		// fingering change now, at whatever speed param A (glideShift_) sets
+		// fingering change now, at whatever speed the AB parameter sets
 		// — see ocarina.h. The low end is near-instant, which is what "off"
 		// used to mean.
 		const bool gliding = (glideSemiQ8_ != targetSemiQ8_);
@@ -583,10 +610,10 @@ private:
 		{
 			// slew_exact and NOT slew: the plain shift stalls short of its
 			// target, which on a pitch is a permanent detune rather than a
-			// harmless approximation. glideShift_ is param A — always glides
+			// harmless approximation. GlideShift() is the AB parameter — always
 			// now, from near-instant at the fast end to over a second at the
 			// slow end; there is no separate on/off any more.
-			glideSemiQ8_ = slew_exact(glideSemiQ8_, targetSemiQ8, glideShift_);
+			glideSemiQ8_ = slew_exact(glideSemiQ8_, targetSemiQ8, GlideShift());
 		}
 		else
 		{
@@ -988,49 +1015,46 @@ private:
 		LedBrightness(5, static_cast<uint16_t>((level_ * kLedFull) >> 12));
 	}
 
-	/// Switch-UP display: LEDs 0-3 show which parameter is selected (solid at
-	/// the button's own position, matching the fingering block everywhere
-	/// else on this panel), LEDs 4/5 show its current value as a two-LED bar.
-	/// Nothing selected yet (paramArmed_ false) leaves 0-3 dark, since
-	/// showing a stale selection from before this entry would be a lie.
+	/// Switch-UP display: the LEDs carry VALUES, not fingerings.
+	///
+	/// Idle, all six show their own parameter's value as brightness at once,
+	/// so the whole state of the sound is readable in a glance without
+	/// touching anything. Hold a pair and only that parameter's LED stays
+	/// lit, now tracking Main live — so you can see what you are about to
+	/// commit before the tap takes it.
+	///
+	/// Button presses are deliberately NOT echoed here. Everywhere else on
+	/// this panel the 2x2 block mirrors the fingering; here it would fight
+	/// the values for the same six lights, and the value is the thing worth
+	/// seeing. The pair you are holding is already obvious — it is under your
+	/// fingers.
 	void ParamLeds()
 	{
-		SetRow((paramArmed_ && paramSel_ != kComboNone)
-		           ? ComboLedMask(paramSel_) : 0,
-		       kLedDim, 0);
-
-		if (!paramArmed_ || paramSel_ == kComboNone)
+		if (paramHeld_ == kParamNone)
 		{
-			LedBrightness(4, 0);
-			LedBrightness(5, 0);
+			for (int p = 0; p < kNumParams; p++)
+				LedBrightness(kParamLed[p], ParamBrightness(paramQ12_[p]));
 			return;
 		}
 
-		// Value as a fraction of each parameter's own range, then as a
-		// two-LED bar — one lit, both lit, matching the coarse resolution a
-		// two-LED readout can actually offer.
-		int32_t frac;   // Q12, 0..4095
-		switch (paramSel_)
-		{
-		case kA:
-			frac = ((glideShift_ - kGlideShiftMin) << 12) /
-			       (kGlideShiftMax - kGlideShiftMin);
-			break;
-		case kB:
-			frac = ((vibMulQ8_ - kVibMulQ8Min) << 12) /
-			       (kVibMulQ8Max - kVibMulQ8Min);
-			break;
-		case kC:
-			frac = ((foldMulQ8_ - kFoldMulQ8Min) << 12) /
-			       (kFoldMulQ8Max - kFoldMulQ8Min);
-			break;
-		case kD:
-		default:
-			frac = 0;
-			break;
-		}
-		LedBrightness(4, (frac > 1365) ? kLedDim : 0);    // > 1/3
-		LedBrightness(5, (frac > 2730) ? kLedDim : 0);    // > 2/3
+		int32_t knob = KnobVal(Knob::Main);
+		if (knob < 0) knob = 0;
+		if (knob > 4095) knob = 4095;
+
+		for (int p = 0; p < kNumParams; p++)
+			LedBrightness(kParamLed[p], 0);
+		LedBrightness(kParamLed[paramHeld_], ParamBrightness(knob));
+	}
+
+	/// A stored knob position as an LED brightness.
+	///
+	/// Floored a little above zero so a parameter turned fully down still
+	/// shows a glow rather than reading as "this LED is broken" — the value
+	/// is zero, the display is not absent.
+	static uint16_t ParamBrightness(int32_t q12)
+	{
+		return static_cast<uint16_t>(
+			kLedGlow + (((kLedFull - kLedGlow) * q12) >> 12));
 	}
 
 	// -----------------------------------------------------------------------
@@ -1054,23 +1078,32 @@ private:
 	uint8_t    collisions_ = 0;
 	int32_t    captured_[kNumLevels] = {};
 
-	bool    upLast_      = false;
 	bool    downLast_    = false;
 	bool    tapped_      = false;
 	bool    gateLatched_ = false;
 	bool    gateLast_    = false;   ///< for the re-strike pickup in ControlTick()
 
 	// --- session parameters, switch UP --------------------------------------
-	uint8_t glideShift_ = kGlideShiftDefault;   ///< param A
-	int32_t vibMulQ8_   = kVibMulQ8Default;     ///< param B
-	int32_t foldMulQ8_  = kFoldMulQ8Default;    ///< param C
-	// param D is reserved — no storage yet.
+	//
+	// Six values, one per PAIR. Stored as Q12 knob positions (0..4095) rather
+	// than as their final units, so the LED display and the edit gesture both
+	// work in one currency and each parameter's range lives in exactly one
+	// place — the accessor that reads it.
+	/// Knob position per parameter, 0..4095. Defaults chosen so the card
+	/// powers up behaving exactly as v4.2 did: centre for the three
+	/// multipliers and the release trim, fully CCW for the attack floor
+	/// (no softening), and kGlideShiftDefault's position for the glide.
+	int32_t paramQ12_[kNumParams] = {
+		2048,   // kParamGlide   — mid travel, ~the old fixed kGlideShift
+		2048,   // kParamVibDep  — 100%
+		0,      // kParamAttack  — floor at kAttackFloorMin, as before
+		2048,   // kParamVibRate — 100%
+		2048,   // kParamRelease — no adjustment
+		2048,   // kParamFold    — 100%
+	};
 
-	/// Which of A/B/C/D is selected in the switch-UP mode, or kComboNone.
-	int8_t paramSel_    = kComboNone;
-	/// Entering UP mode must ignore whatever is already held — see
-	/// ReadSwitch(). False until the NEXT settled change to a fresh single.
-	bool    paramArmed_ = false;
+	/// Which parameter the currently-held pair names, or kParamNone.
+	int8_t paramHeld_ = kParamNone;
 
 	int32_t  level_      = 0;   ///< what the voice is given, after every offset
 	int32_t  xNow_       = 0;   ///< X knob after its CV offset

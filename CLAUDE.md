@@ -198,17 +198,48 @@ changed silently (no further settled event) during the tail — handled by
 tracking the gate's own rising edge and calling `NoteOn(levels_.Current())`
 on it directly, since `Current()` stays live regardless of the freeze.
 
+**`peak_` is LOUDNESS; `effort_` is HOW FAR THE KNOB IS TURNED. They are not
+interchangeable and picking the wrong one is a recurring bug.** peak is the
+S-curve, deliberately flat near zero because that is the right shape for
+loudness. Anything asking "how far has this been turned" must use effort, or
+it inherits that flat foot: the release coupling read peak until v4.3.0, so
+across the bottom fifth of the travel it stayed under 1/8 of full scale, the
+release shift pinned to its minimum, and every note there was a 4–8ms click
+— "the bottom 1/5th of the main knob, the voice doesn't sound". The timbre
+path has used effort for exactly this reason for several versions.
+
+**A control that means "change it from here" must be measured from where it
+WAS, not from the end of its travel.** `kReleaseTrimShift` was absolute, so
+playing quietly — Main already near CCW — arrived with the trim near maximum
+and truncated the note before the player asked for anything. It is now
+relative to Main's position when the bow lifted, latched on the falling edge
+along with the release length. Both are latched because both are driven by
+the same knob: if the base rate tracked Main during the tail as well as the
+trim, turning CCW would shorten the note twice over.
+
 **Switch UP is session-parameter editing, a third stable mode alongside
-DOWN.** Press A/B/C/D, turn Main to set that parameter (A glide time, B
-vibrato depth multiplier, C wavefold multiplier, D reserved) — values persist
-for the session, RAM only, like tuning. Portamento's old on/off toggle is
-gone; every held note glides now, and param A is how fast. Entering UP
-disarms selection so whatever fingering is already held is ignored; only the
-NEXT settled change to a fresh single arms it — requested directly:
-"entering this state will already have a button being 'pressed', this should
-be ignored until the NEXT press." A note already releasing keeps fading out
-untouched (`breath_.Tick()` always runs); switch DOWN and Pulse In 1 are both
-forced low here so nothing NEW can strike while adjusting.
+DOWN.** SIX parameters, one per PAIR — hold the pair, set Main, TAP to
+commit. AB glide time, AC vibrato depth, AD attack floor, BC vibrato rate,
+BD release length, CD wavefold; LED *n* is the *n*th pair. Values persist for
+the session, RAM only, like tuning. Portamento's old on/off toggle is gone;
+every held note glides now, and AB is how fast.
+
+**The tap commits, and that is forced by the gesture rather than chosen for
+safety.** The pair being held is what NAMES the parameter, so until one is
+held there is nothing Main's position could preview. This is also why no
+"ignore what was already held on entry" guard is needed any more (v4.2.0
+required one): an accidental hold does nothing, because only a deliberate tap
+writes. **In this mode the LEDs carry VALUES, not fingerings** — all six
+brightnesses on entry, then just the held pair's, following Main. Do not add
+button-press feedback here; it would fight the values for the same lights.
+
+A note already releasing keeps fading out untouched (`breath_.Tick()` always
+runs); switch DOWN and Pulse In 1 are both forced low here so nothing NEW can
+strike while adjusting.
+
+**`kReleaseShiftMax + kReleaseAdjMax` must never exceed `kEnvFrac`.** The
+release-length parameter's +1 ceiling is that bound, not taste — exceed it
+and the v4.2.1 collapse returns. `breathsim.py` asserts it at every setting.
 
 **No switch position that is held may carry a TIMED gesture layered on top of
 normal play.** This has now cost two bugs: switch-up as a held legato mode

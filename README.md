@@ -51,7 +51,7 @@ knob** — hold the switch down for two seconds.
 | **Main** | held: note peak, then vibrato · released: trims the release live · **switch ↑**: sets the selected session parameter *(fine tune while calibrating)* |
 | **X** | attack shape, vibrato character, wavefold *(octave while calibrating)* |
 | **Y** | scale *(coarse tune while calibrating)* |
-| **Switch ↑** | **session parameters** — press A/B/C/D, turn Main to set it |
+| **Switch ↑** | **session parameters** — hold a pair, set Main, tap to commit |
 | **Switch —** | rest — the card is silent here |
 | **Switch ↓** | **the bow** — tap to strike, hold to sustain |
 | **Audio Out 1** | the tone, a sine |
@@ -143,34 +143,46 @@ phase, so they mix without comb filtering and the square always lines up.
 ## Session parameters
 
 **Switch up is a third stable position**, held for as long as you're in it —
-not a flick, not a timed gesture. Press one of the fingering buttons and turn
-Main to set what it controls:
+not a flick, not a timed gesture. Six parameters, one per **pair**: hold the
+pair, put Main where you want it, and **tap the switch** to commit.
 
-| Button | Parameter |
-|---|---|
-| A | portamento glide time |
-| B | overall vibrato depth |
-| C | wavefold amount |
-| D | *(reserved)* |
+| Pair | Parameter | LED |
+|---|---|---|
+| **AB** | portamento glide time | 0 |
+| **AC** | vibrato depth | 1 |
+| **AD** | attack floor — how soft the fastest strike may be | 2 |
+| **BC** | vibrato rate | 3 |
+| **BD** | overall release length | 4 |
+| **CD** | wavefold amount | 5 |
 
-Values stick for the session, the same way tuning does. LEDs 0–3 mirror the
-button you pressed so you can see which parameter is live; LEDs 4 and 5 form a
-coarse two-step bar for its value as you turn Main.
+The pairs are in the order the card already lists them everywhere else
+(AB, AC, AD, BC, BD, CD), so LED *n* is simply the *n*th pair.
 
-**Whatever is under your fingers when you arrive here is ignored.** The
-selection only updates on the *next* press — so flicking up mid-phrase, with a
-note still fingered, can't silently set a parameter to whatever you happened
-to be holding.
+Values stick for the session, the same way tuning does.
+
+**The tap is what commits, and that isn't a safety rail — it's the only thing
+that can work.** The pair you're holding is what *names* the parameter, so
+until you're holding one there's nothing for Main's position to mean. Hold a
+pair and its LED starts following Main, so you can see the value you're aiming
+at before you take it; let go without tapping and nothing changed.
+
+**On entry, all six values show at once** as the brightness of the six LEDs —
+the whole state of the sound, readable in a glance without touching anything.
+Hold a pair and the others go dark so only that one is shown, tracking Main.
+
+Button presses aren't echoed here. Everywhere else the 2×2 block mirrors your
+fingering, but in this mode the LEDs are carrying **values**, and the pair
+you're holding is already under your fingers.
 
 **Playing carries on underneath.** A note already releasing keeps fading out
 exactly as it would anywhere else — this mode only intercepts the buttons and
-Main, not the envelope. Switch down and Pulse In 1 are both ignored while
-you're up here, so nothing new can strike while you're mid-adjustment.
+Main, not the envelope. Switch down and Pulse In 1 can't start a new note
+while you're up here.
 
 **Portamento no longer has an on/off.** Every held note glides on a fingering
-change now; param A is how long that takes, from close to instant at one end
-to over a second at the other. Turning it all the way down is what "off" used
-to mean.
+change now; AB is how long that takes, from close to instant at one end to
+over a second at the other. Turning it all the way down is what "off" used to
+mean.
 
 ---
 

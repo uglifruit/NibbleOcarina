@@ -73,18 +73,32 @@ constexpr int32_t kBreathThresh = 60;
 constexpr uint8_t kAttackShiftFast = 2;
 constexpr uint8_t kAttackShiftSlow = 11;
 
-/// Release shift range, COUPLED TO LEVEL.
+/// Release shift range, COUPLED TO EFFORT — not to peak.
 ///
-/// This is the "generally louder will last longer" coupling: the release shift
-/// is derived from the note's peak rather than from a knob of its own, so a
-/// quiet note is gone quickly and a loud one rings on. One gesture, two
-/// musical consequences, which is what makes the knob feel like dynamics
-/// rather than like a volume fader.
+/// This is the "generally louder will last longer" coupling: the release
+/// shift rises with the knob, so a quiet note is short and a loud one rings
+/// on. One gesture, two musical consequences, which is what makes the knob
+/// feel like dynamics rather than like a volume fader.
+///
+/// **It is derived from `effort_` (the LINEAR knob position), not `peak_`
+/// (the S-curve).** Using peak silenced the bottom fifth of the knob
+/// entirely: the S-curve is deliberately flat near zero, so peak stayed
+/// under 1/8 of full scale for that whole span, which pinned the shift at
+/// its minimum and gave every note there a 4–8ms release. That is a click,
+/// not a note — reported from hardware as "in the bottom (most CCW) 1/5th
+/// ish of the main knob the voice doesn't sound". The S-curve's flat foot is
+/// correct for LOUDNESS, which is what it was designed for, and wrong as an
+/// input to anything measuring how far the knob has been turned. Effort
+/// exists precisely for that second job — see EffortQ12().
+///
+/// The floor is 7 rather than 6 for the same reason: even the quietest note
+/// has to last long enough to be a note. At 5% of the knob this now gives
+/// ~144ms; full travel is ~2.9s, unchanged.
 ///
 /// This is the shift at Main fully CW during release — see kReleaseTrimShift
 /// below for how Main scales it live once the gate has fallen.
-constexpr uint8_t kReleaseShiftMin = 6;
-constexpr uint8_t kReleaseShiftMax = 10;
+constexpr uint8_t kReleaseShiftMin = 7;
+constexpr uint8_t kReleaseShiftMax = 11;
 
 /// How far Main can SPEED UP the release, once it is no longer setting peak.
 ///
@@ -98,12 +112,20 @@ constexpr uint8_t kReleaseShiftMax = 10;
 /// length the peak already earned it.
 ///
 /// This is deliberately a SUBTRACTION from the coupled shift, not a
-/// replacement of it — Main during release can only shorten what the peak
-/// bought, never lengthen it past kReleaseShiftMax. Lengthening past the
-/// peak's own coupling would decouple "louder rings on longer" from what
-/// actually determines how long a note rings, which is the rule this whole
-/// envelope is built around.
-constexpr uint8_t kReleaseTrimShift = 5;   ///< max shift REMOVED at Main == 0
+/// replacement of it — Main during release can only shorten what the note
+/// bought, never lengthen it past kReleaseShiftMax. Lengthening would
+/// decouple "louder rings on longer" from what actually determines how long
+/// a note rings, which is the rule this whole envelope is built around.
+///
+/// **Measured RELATIVE to where Main sat when the bow lifted**, not from the
+/// top of the knob. Absolute was wrong and audibly so: a note played quietly
+/// has Main near CCW already, so it arrived with the trim near maximum and
+/// was truncated before the player asked for anything — shift 7 cut to 3,
+/// an 8ms click. That was half of "the bottom fifth of the knob doesn't
+/// sound"; the other half was taking the base rate from the S-curve. "Turn
+/// it down to cut the note short" only means anything as a CHANGE from
+/// wherever you were.
+constexpr uint8_t kReleaseTrimShift = 7;   ///< max shift removed at a full drop
 constexpr uint8_t kReleaseShiftFloor = 2;  ///< fastest possible release, ~1ms
 
 /// Where the envelope is considered finished and is snapped to zero.
@@ -207,8 +229,14 @@ public:
 	/// job that raw position DOES is entirely Tick()'s call, based on gate_.
 	void SetKnob(int32_t knob, int32_t cvAdd);
 
-	/// Attack shape, 0..4095 from the X knob. 0 is a strike, 4095 a slow swell.
-	void SetAttack(int32_t xKnob);
+	/// Attack shape, 0..4095 from the X knob. 0 is a strike, 4095 a slow
+	/// swell. `floorShift` is the AD session parameter, raising the FAST end
+	/// only so the strike can be softened without costing X any travel.
+	void SetAttack(int32_t xKnob, uint8_t floorShift = kAttackShiftFast);
+
+	/// Release length trim in shifts, the BC session parameter. Applied when
+	/// the gate falls, not live — see SetGate().
+	void SetReleaseAdj(int8_t adj) { releaseAdj_ = adj; }
 
 	/// THE BOW. True while the switch is held or Pulse In 1 is high.
 	///
@@ -260,6 +288,12 @@ private:
 	bool     gate_    = false;
 	bool     struck_  = false;
 	uint8_t  attack_  = kAttackShiftFast;
+	/// All latched on the gate's FALLING edge — see SetGate().
+	uint8_t  relBase_     = kReleaseShiftMin;  ///< release shift for this tail
+	int32_t  relFrom_     = 4095;   ///< Main's position when the bow lifted
+	int32_t  relRecipQ16_ = 16;     ///< Q16 reciprocal of relFrom_, for the trim
+
+	int8_t   releaseAdj_  = kReleaseAdjDefault;  ///< BC session parameter
 
 	int32_t  vibCents_    = 0;
 	int32_t  vibRateQ8_   = 0;

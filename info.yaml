@@ -3,13 +3,13 @@ Name: NIBBLE OCARINA
 short-description: Turns the Workshop System's four buttons into the finger holes of a bowed flute you play with a switch
 Language: C++ (ComputerCard)
 Creator: Andy Jenkinson (uglifruit)
-Version: "4.2.1"
+Version: "4.3.0"
 Status: Released
 License: CC-BY-4.0
 repository: https://github.com/uglifruit/NibbleOcarina
 Editor: none
 date-created: 2026-08-08
-date-updated: 2026-08-17
+date-updated: 2026-08-18
 
 contact:
   social:
@@ -17,7 +17,7 @@ contact:
 
 uf2:
   - path: UF2/ocarina.uf2
-    name: NIBBLE OCARINA 4.2.1
+    name: NIBBLE OCARINA 4.3.0
 
 tags:
   - flute
@@ -152,7 +152,7 @@ controls:
   switch:
     up:
       name: Session parameters
-      description: "A third STABLE position, held for as long as you want to be here - not a flicked toggle. Press one of the fingering buttons (A, B, C or D) and turn Main to set that parameter: A is portamento glide time, B is overall vibrato depth, C is wavefold amount, D is reserved for later. Whatever fingering happens to be held the moment you arrive here is ignored - the next PRESS is what selects, so you never accidentally set a parameter just by entering the mode with a finger already down. Values are kept for the session, the same as tuning. Any note already ringing out keeps doing so exactly as it would anywhere else - this mode only intercepts the buttons and Main, it does not touch the envelope, and switch DOWN and Pulse In 1 are both ignored here so a new note cannot fire while you are dialling something in."
+      description: "A third STABLE position, held for as long as you want to be here - not a flicked toggle. SIX parameters, one per button PAIR: hold the pair, put Main where you want it, and TAP the switch to commit. AB is portamento glide time, AC vibrato depth, AD attack floor (how soft the fastest strike is allowed to be), BC vibrato rate, BD overall release length, CD wavefold amount - the six pairs in the order the card lists them everywhere else, so LED n is simply the nth pair. Committing on the tap rather than live is forced by the gesture rather than chosen: the pair you are holding is what NAMES the parameter, so until you are holding one there is nothing Main's position could be previewing. The moment you arrive, all six values are shown at once as the brightness of the six LEDs, so the whole state of the sound reads in a glance; hold a pair and only its LED stays lit, now following Main so you can see what you are about to commit. Button presses themselves are deliberately not echoed - the LEDs are carrying values here, not fingerings, and the pair you are holding is already under your fingers. Values are kept for the session, the same as tuning. Any note already ringing out keeps doing so exactly as it would anywhere else - this mode only intercepts the buttons and Main, and switch DOWN and Pulse In 1 cannot start a new note while you are here."
     middle:
       name: Rest
       description: The switch's resting position. Nothing sounds here - the card is silent until you bow it, either by holding the switch down or by sending a gate to Pulse In 1.
@@ -178,8 +178,8 @@ controls:
       display: list
       items:
         - id: LED0-3
-          description: "In play, the fingering you are holding - the 2x2 block is laid out like the Four Voltages buttons, so the panel mirrors your fingers. With switch UP held, the SAME block instead shows which session parameter is selected (A/B/C/D), lit solid at that button's position, dark until you press one. During calibration, the combination to hold next, blinking, with already-visited buttons glowing dimly. After a fall back to ten, a four-LED bar showing how close the patch came to fifteen."
+          description: "In play, the fingering you are holding - the 2x2 block is laid out like the Four Voltages buttons, so the panel mirrors your fingers. With switch UP held these become value displays instead: LED0 is the glide time (AB), LED1 vibrato depth (AC), LED2 attack floor (AD), LED3 vibrato rate (BC), each shown as brightness. During calibration, the combination to hold next, blinking, with already-visited buttons glowing dimly. After a fall back to ten, a four-LED bar showing how close the patch came to fifteen."
         - id: LED4
-          description: "In play, dark - the old portamento on/off indicator is gone now that portamento has no on/off, only a session-set time. With switch UP held and a parameter selected, lights when its value has crossed a third of its range - together with LED5 the two form a coarse bar. During calibration it marks the four singles."
+          description: "In play, dark - the old portamento on/off indicator is gone now that portamento has no on/off, only a session-set time. With switch UP held it shows the RELEASE LENGTH parameter (BD) as brightness, and follows Main live while that pair is held. During calibration it marks the four singles."
         - id: LED5
-          description: "In play, the mode indicator - dimly lit means all fifteen combinations are live, dark means ten. This is the one thing worth knowing mid-performance, because it tells you whether a third finger does anything. With switch UP held and a parameter selected, lights when its value has crossed two thirds of its range, alongside LED4. During calibration it marks pairs."
+          description: "In play, the mode indicator - dimly lit means all fifteen combinations are live, dark means ten. This is the one thing worth knowing mid-performance, because it tells you whether a third finger does anything. With switch UP held it shows the WAVEFOLD parameter (CD) as brightness, and follows Main live while that pair is held. During calibration it marks pairs."

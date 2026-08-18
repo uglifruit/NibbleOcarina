@@ -283,17 +283,57 @@ constexpr uint16_t kLedGlow = 180;
 // ---------------------------------------------------------------------------
 //
 // Switch UP is a third stable position, not a flicked gesture — the same
-// kind of thing DOWN already is for playing. Press a button (A/B/C/D) to
-// select a parameter, then turn Main to set its value; the value is held for
-// the session (RAM only, like tuning) once set. This is not the "switch
+// kind of thing DOWN already is for playing. This is not the "switch
 // position held while playing carries a gesture" mistake CLAUDE.md warns
 // about: UP does not overlay a gesture on top of normal play, it is its own
 // mode, exactly as DOWN already is.
 //
-// A / kParamGlide     portamento glide time (always on; low end ~ instant)
-// B / kParamVibrato    vibrato depth multiplier, on top of VibratoFor()
-// C / kParamFold       wavefold multiplier, on top of FoldFor()
-// D / kParamReserved   no-op — a slot for a future reverb/delay send
+// SIX parameters, one per PAIR. Hold the pair, put Main where you want it,
+// TAP the switch to commit. LED n is the nth pair, in the order the Combo
+// enum already lists them:
+//
+//   AB  glide time      AC  vibrato depth    AD  attack floor
+//   BC  vibrato rate    BD  release length   CD  wavefold amount
+//
+// Pairs and not singles, because six is what the sound needs and there are
+// exactly six of them. Committing on a TAP rather than live is not a
+// safety-rail, it is forced by the gesture: the pair you are holding is what
+// names the parameter, so until you are holding one there is nothing to
+// preview, and Main's position cannot mean anything on its own.
+//
+// On entry all six values are shown at once as the brightness of LEDs 0-5,
+// so the whole state of the sound is readable in one glance without pressing
+// anything. Holding a pair swaps that display for just its own LED tracking
+// Main, which is why button-press feedback is deliberately NOT shown here —
+// the LEDs are carrying values, not fingerings.
+
+/// Parameter slots, indexed by their pair's combo. Ordered as the pairs
+/// themselves are in the Combo enum (kAB..kCD), so ParamOfCombo() is a
+/// subtraction rather than a lookup.
+enum Param : int8_t {
+	kParamGlide   = 0,   ///< AB — portamento glide time
+	kParamVibDep  = 1,   ///< AC — vibrato depth
+	kParamAttack  = 2,   ///< AD — attack floor
+	kParamVibRate = 3,   ///< BC — vibrato rate
+	kParamRelease = 4,   ///< BD — release length
+	kParamFold    = 5,   ///< CD — wavefold amount
+	kNumParams    = 6,
+	kParamNone    = -1
+};
+
+/// Combo -> parameter slot. The six pairs occupy kAB..kCD contiguously, so
+/// this is one subtraction and a range check; anything else is kParamNone.
+static inline int8_t ParamOfCombo(int8_t combo)
+{
+	if (combo < kAB || combo > kCD) return kParamNone;
+	return static_cast<int8_t>(combo - kAB);
+}
+
+/// Which LED shows each parameter. Slot order IS LED order — parameter n
+/// lives on LED n — so the entry display is a straight walk of the array.
+/// Kept explicit because the mapping is a user-facing promise, not an
+/// implementation detail.
+constexpr int kParamLed[kNumParams] = { 0, 1, 2, 3, 4, 5 };
 
 /// Portamento's own on/off toggle is gone: every held note now glides on a
 /// fingering change, and this range is how slow-to-instant that glide is.
@@ -309,11 +349,44 @@ constexpr int32_t kVibMulQ8Min     = 0;
 constexpr int32_t kVibMulQ8Max     = 384;   ///< 150%
 constexpr int32_t kVibMulQ8Default = 256;   ///< 100% — matches pre-4.2 behaviour
 
+/// Vibrato RATE multiplier, Q8. X still chooses the character (fast/wide
+/// through slow/wide); this scales whatever rate that lands on, so the same
+/// gesture can be made lazier or more nervous without giving up the morph.
+constexpr int32_t kVibRateMulQ8Min     = 64;    ///< 25% — very slow
+constexpr int32_t kVibRateMulQ8Max     = 512;   ///< 200%
+constexpr int32_t kVibRateMulQ8Default = 256;
+
 /// Wavefold multiplier, Q8, same shape as the vibrato multiplier: 0 keeps
 /// Audio Out 2 a plain sine regardless of X, 256 is unchanged, and the top
 /// end raises the ceiling above kFoldMax a little rather than just gating it.
 constexpr int32_t kFoldMulQ8Min     = 0;
 constexpr int32_t kFoldMulQ8Max     = 384;
 constexpr int32_t kFoldMulQ8Default = 256;
+
+/// Attack FLOOR: the fastest attack X is allowed to reach, as a shift.
+///
+/// X's anticlockwise end is a 3ms strike, which is right for a percussive
+/// voice and too abrupt for a soft one. Raising this floor softens the whole
+/// bottom of X's travel without touching its top, so the knob keeps its full
+/// range of shapes and just starts them gentler.
+constexpr uint8_t kAttackFloorMin     = 2;   ///< as now — a hard strike
+constexpr uint8_t kAttackFloorMax     = 8;   ///< ~85ms even at X fully CCW
+constexpr uint8_t kAttackFloorDefault = 2;
+
+/// Release length trim, in shifts, added to the effort-coupled release.
+///
+/// Signed: the middle of the knob is "as the note earned", below it shortens
+/// and above it lengthens. A global feel control on top of the per-note
+/// dynamics rather than a replacement for them.
+///
+/// **The maximum is +1 and that is a hard ceiling, not a taste decision.**
+/// kReleaseShiftMax + kReleaseAdjMax must never exceed kEnvFrac, or the
+/// forced `step = 1` collapse comes back — see kEnvFrac in breath.h, which
+/// cost four failed attempts to find. 11 + 1 == 12 exactly. Raising this
+/// means raising kEnvFrac with it. (+2 would also be 24 seconds of release,
+/// which is a drone rather than a note.)
+constexpr int8_t kReleaseAdjMin     = -4;
+constexpr int8_t kReleaseAdjMax     =  1;
+constexpr int8_t kReleaseAdjDefault =  0;
 
 } // namespace nib

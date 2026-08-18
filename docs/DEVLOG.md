@@ -5,6 +5,115 @@ What was got wrong, and how it was found. Written for whoever changes this next
 
 ---
 
+## v4.3.0 — the quiet end of the knob was a click, and six parameters on pairs
+
+> "In the bottom (most CCW) 1/5th ish of the main knob - the voice doesn't
+> sound!"
+
+It was sounding, for four to eight milliseconds. That is a click, and at
+that level it simply is not heard. **Two independent causes, both of them
+mine, and both the same mistake in different clothes: using the S-curve, or
+an absolute knob position, where a measure of how far the knob had been
+TURNED was wanted.**
+
+### One: release length came from peak, not effort
+
+`peak_` is the S-curve — deliberately flat near zero, because that is the
+correct shape for LOUDNESS. It was also feeding the release coupling, so
+across the whole bottom fifth of the travel peak stayed under 1/8 of full
+scale and pinned the release shift to its minimum. Every note down there got
+the same, shortest possible release.
+
+`effort_` is the linear knob position and exists precisely for the jobs that
+want "how far has this been turned" rather than "how loud is this" — the
+timbre path has used it for exactly that reason for several versions. The
+release now takes it too, and the floor went from 6 to 7 so even the
+quietest note lasts long enough to be a note.
+
+### Two: the release trim was absolute, not relative
+
+`kReleaseTrimShift` lets Main cut a tail short during the release (v4.1.0).
+It was computed from Main's absolute position: fully CW meant no trim, fully
+CCW meant maximum. Which is exactly wrong for a quiet note, because playing
+quietly means Main is *already* near CCW — so the note arrived with the trim
+near maximum and was truncated before the player had asked for anything.
+Shift 7 cut straight to 3.
+
+"Turn it down to cut the note short" only means anything as a CHANGE from
+wherever you were. The trim is now measured relative to Main's position at
+the moment the bow lifted, latched on the falling edge along with the
+release length itself. Both latched, because both are driven by the same
+knob: if the base rate kept tracking Main during the tail as well as the
+trim, turning CCW would shorten the note twice over through two different
+mechanisms.
+
+Measured at 5% of the knob: 8.7ms before, 144ms after. Full travel is
+unchanged at ~2.9s.
+
+The scaling needs a division by a runtime value, so it is done once on the
+falling edge as a Q16 reciprocal and the per-tick path stays a multiply —
+`Breath::Tick()` runs on the control tick that already carries the heaviest
+work.
+
+### Six parameters, on the pairs
+
+> "In up position; make the parameters set by putting main knob in position
+> then tapping: AB CD AC BD AD BC. So there can be six parameters for the
+> sound set. When you ENTER the switch up mode each of the six parameter
+> current values are mapped to the brightness of LED 0,1,2,3,4,5. HOLDING
+> THE PAIR, and turning the knob will show the brightness change, obviously.
+> In this mode we don't need to see the visual feedback for actual button
+> presses."
+
+The v4.2.0 arrangement (four parameters on the four singles, set live) is
+replaced. Six parameters, one per pair, committed on a tap:
+
+| Pair | Parameter |
+|---|---|
+| AB | portamento glide time |
+| AC | vibrato depth |
+| AD | attack floor |
+| BC | vibrato rate |
+| BD | release length |
+| CD | wavefold amount |
+
+Three are new. **Attack floor** raises the FAST end of X's sweep only, so
+the 3ms strike can be softened without costing X any of its travel — the
+knob keeps its whole range of shapes and starts them gentler. **Vibrato
+rate** scales whatever rate X's morph lands on, so the same gesture can be
+made lazier or more nervous. **Release length** shifts the whole
+effort-coupled release up or down.
+
+**Why the tap commits, rather than live editing.** Worth recording because
+the reasoning is not the obvious one: it is not a safety rail. The pair you
+are holding is what NAMES the parameter, so until you are holding one there
+is nothing for Main's position to be previewing — the knob cannot mean
+anything on its own. Holding the pair is the selection, and while it is held
+its LED tracks Main so the value is visible before the tap takes it.
+
+That also removed a whole piece of machinery: v4.2.0 needed an
+"ignore whatever is already held on entry" guard, because a held single
+immediately became a live selection. With a tap required, an accidental hold
+does nothing at all, and the guard, the arming flag and the entry-edge
+detection all went with it.
+
+**The LEDs carry values here, not fingerings.** On entry all six brightnesses
+show all six parameters at once, so the state of the sound reads in a glance
+without pressing anything; hold a pair and the others go dark so only that
+one is shown, following Main. Button-press feedback is deliberately absent —
+it would fight the values for the same six lights, and the pair being held is
+already under the player's fingers.
+
+**One constraint worth flagging for anyone extending this.** The release
+length parameter's maximum is +1 shift and that is a hard ceiling, not
+taste: `kReleaseShiftMax + kReleaseAdjMax` must never exceed `kEnvFrac`, or
+the accelerating collapse from v4.2.1 comes straight back. 11 + 1 == 12
+exactly. Raising it means raising `kEnvFrac` with it. (+2 would also be 24
+seconds of release, which is a drone rather than a note.) `breathsim.py`
+asserts the bound at every setting.
+
+---
+
 ## v4.2.1 — the forced minimum step was the bug, all four times
 
 > "This fading to silence - STILL feels like an abrupt stop on everything at
